@@ -39,8 +39,13 @@ struct SessionDraft {
     private var headerDraftOwner: String?
     private var headerDrafts: [String: [CustomHeader]] = [:]
     private var connectedHeaders: [CustomHeader] = []
-    @Published var sessions: [SessionSummary] = []
-    @Published var selectedID: String?
+    @Published var sessions: [SessionSummary] = [] {
+        didSet { reconcileSessionDisclosure() }
+    }
+    @Published private var sessionDisclosure = SessionDisclosureState()
+    @Published var selectedID: String? {
+        didSet { if oldValue != selectedID { reconcileSessionDisclosure() } }
+    }
     @Published var detail: SessionDetail?
     @Published var messages: [ChatMessage] = []
     @Published var search = ""
@@ -253,6 +258,17 @@ struct SessionDraft {
                 self.error = "Signed out locally and forgot saved credentials. Server logout could not be confirmed; the remote session may remain valid."
             }
         } catch { self.error = "Could not forget saved credentials: " + errorMessage(error) }
+    }
+
+    var isSessionSearch: Bool { !search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    var expandedSessionIDs: Set<String> { sessionDisclosure.expanded }
+    var sidebarRows: [SessionHierarchy.Row] {
+        SessionHierarchy(sessions: sessions).rows(expanded: sessionDisclosure.expanded, searching: isSessionSearch, selectedID: selectedID)
+    }
+    func toggleSessionDisclosure(_ id: String) { sessionDisclosure.toggle(id) }
+    private func reconcileSessionDisclosure() {
+        sessionDisclosure.reconcile(scope: connectedAddress, hierarchy: SessionHierarchy(sessions: sessions),
+                                    selectedID: selectedID, searching: isSessionSearch)
     }
 
     func reloadSessions() async throws {

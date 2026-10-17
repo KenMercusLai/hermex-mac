@@ -26,6 +26,7 @@ The app is **ad-hoc signed with hardened runtime**, not Developer ID signed or A
 - Pre-connect **Connection Headers** in the welcome screen and Settings: Cloudflare Access Service Token pair, generic Add/Remove Header rows and secure values; separate per-server Keychain storage.
 - Saved server addresses and connection switching. Unsent text and attachment references are isolated per server/session **in app memory**.
 - Session list, server-side search (Return to search), create, rename, pin/unpin, archive/restore and confirmed permanent deletion. Right-click a session for actions. Enable **Archived** to find and restore archived sessions.
+- Collapsible **nested subagents** under their owning conversation, collapsed by default. Use the left chevron to reveal workers without selecting the parent; each child opens normally, retaining server-reported read-only restrictions. Parents show descendant counts and reported active workers. Expansion is memory-only and resets on disconnect/server change. Search results stay flat with parent context, so a collapsed matching child is never hidden. Missing owners remain visible with a truthful badge; grouping requires producer subagent metadata, never just a title or parent link.
 - Conversation history with earlier-message loading, inline Markdown/headings/fenced code, message/code copying, reasoning and recorded/live tool details.
 - Real SSE streaming, **Stop**, visible disconnect errors and **Reattach** using the existing stream ID/journal cursor. Reattach never resends the prompt. **Refresh Run** discovers an active run after reopening a conversation.
 - Tool approval **Allow Once / Deny**, clarification choices and free-text answers. Pending requests are checked while a run is active; no automatic or permanent approval grants.
@@ -87,7 +88,7 @@ bash macOS/scripts/test.sh
 python3 macOS/Tests/run_smoke.py
 
 # Universal app, signature verification, ZIP, DMG, SHA256SUMS
-python3 macOS/scripts/build.py --version 0.1.1 --arch universal
+python3 macOS/scripts/build.py --version 0.1.2 --arch universal
 ```
 
 Artifacts are under `dist/`, ignored by Git. `--arch arm64` builds only Apple silicon. Version is supplied explicitly. Bundle display name: **Hermex for Mac**; identifier: `com.kenmercuslai.hermex-mac`.

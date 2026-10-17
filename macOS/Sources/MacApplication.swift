@@ -210,18 +210,13 @@ struct SidebarView: View {
             List {
                 Section("Conversations") {
                     if store.sessions.isEmpty { Text(store.search.isEmpty ? "No sessions yet" : "No matching sessions").foregroundStyle(.secondary).font(.callout) }
-                    ForEach(store.sessions) { session in
-                        Button { Task { await store.selectSession(session.id) } } label: {
-                            HStack(alignment: .top, spacing: 8) {
-                                Image(systemName: session.archived == true ? "archivebox" : session.pinned == true ? "pin.fill" : "bubble.left").font(.caption).foregroundStyle(.secondary).padding(.top, 3)
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(session.title ?? "Untitled").font(.callout.weight(.medium)).lineLimit(2)
-                                    Text(session.matchPreview ?? session.model ?? "\(session.messageCount ?? 0) messages").font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                                }
-                                Spacer(minLength: 0)
-                                if session.isStreaming == true { Circle().fill(.green).frame(width: 6, height: 6).padding(.top, 5) }
-                            }.padding(.vertical, 4).contentShape(Rectangle())
-                        }.buttonStyle(.plain).listRowBackground(store.selectedID == session.id && store.panel == "Chat" ? Color.accentColor.opacity(0.12) : .clear)
+                    ForEach(store.sidebarRows) { row in
+                        let session = row.session
+                        SidebarSessionRow(row: row, expanded: store.expandedSessionIDs.contains(row.id),
+                                          selected: store.selectedID == row.id && store.panel == "Chat",
+                                          select: { Task { await store.selectSession(row.id) } },
+                                          toggle: { store.toggleSessionDisclosure(row.id) })
+                            .listRowBackground(store.selectedID == row.id && store.panel == "Chat" ? Color.accentColor.opacity(0.12) : .clear)
                             .contextMenu {
                                 Button("Rename…") { rename = session; newTitle = session.title ?? "" }
                                 Button(session.pinned == true ? "Unpin" : "Pin") { Task { await store.mutate(session.id, action: .pin(session.pinned != true)) } }
