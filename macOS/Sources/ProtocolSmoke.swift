@@ -76,6 +76,25 @@ enum ProtocolSmoke {
             try require(store.connected, store.error ?? "Restored-header connection failed")
         }
         try require(!store.modelCatalog.isEmpty && !store.providers.isEmpty && !store.profiles.isEmpty && !store.workspaces.isEmpty, "Configuration catalog decoding failed")
+        try require(store.sidebarRows.map(\.id) == ["fixture-welcome", "fixture-orphan"], "Hierarchy did not start collapsed or hid its orphan")
+        try require(store.sidebarRows.first?.descendantCount == 3 && store.sidebarRows.first?.activeDescendantCount == 1, "Nested count/activity did not bubble to the owner")
+        store.toggleSessionDisclosure("fixture-welcome")
+        try require(store.selectedID == nil, "Disclosure unexpectedly selected a conversation")
+        try require(store.sidebarRows.map(\.id) == ["fixture-welcome", "fixture-worker", "fixture-sibling", "fixture-orphan"], "Immediate children did not remain in source order")
+        store.toggleSessionDisclosure("fixture-worker")
+        try require(store.sidebarRows.count == 5 && store.sidebarRows[2].depth == 2, "Nested child not represented exactly once")
+        await store.selectSession("fixture-nested")
+        try require(store.detail?.readOnly == true && store.messages.first?.content?.contains("Explicit fixture") == true, "Child selection lost read-only history")
+        store.toggleSessionDisclosure("fixture-welcome")
+        await store.refresh()
+        try require(store.selectedID == "fixture-nested" && store.sidebarRows.first?.containsSelectedDescendant == true, "Explicit collapse lost selected-child context")
+        store.search = "citations"
+        await store.refresh()
+        try require(store.sidebarRows.map(\.id) == ["fixture-nested"] && store.sidebarRows.first?.context?.contains("fixture-worker") == true, "Search hid a collapsed matching child or invented its owner")
+        store.search = ""
+        await store.refresh()
+        try require(store.expandedSessionIDs == ["fixture-worker"], "Refresh/search lost surviving disclosure choices")
+        print("HIERARCHY SMOKE PASSED: collapsed owner, nested siblings, active descendant, orphan, read-only child selection, explicit collapse and hidden-child search.")
         await store.newSession()
         guard let id = store.selectedID, let api = store.api else { throw MacFailure.message("Fixture create failed") }
         await store.mutate(id, action: .rename("Mac pipeline smoke"))

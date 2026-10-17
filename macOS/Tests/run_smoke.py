@@ -11,7 +11,11 @@ from protocol_fixture import Fixture, FIXTURE_HEADERS, start, start_redirect_pai
 binary = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else '.build/debug/Hermex').resolve()
 env = {key: os.environ[key] for key in ('HOME', 'PATH', 'TMPDIR') if key in os.environ}
 for require_headers in (False, True):
-    server = start(require_headers=require_headers)
+    server = start(seed=True, require_headers=require_headers)
+    seeded_ids = {'fixture-welcome', 'fixture-worker', 'fixture-nested', 'fixture-sibling', 'fixture-orphan'}
+    assert set(Fixture.sessions) == seeded_ids, 'Missing explicit hierarchy fixture seeds'
+    assert Fixture.sessions['fixture-worker']['parent_session_id'] == 'fixture-welcome'
+    assert Fixture.sessions['fixture-nested']['parent_session_id'] == 'fixture-worker'
     Fixture.fail_next_stream = True
     address = f'http://127.0.0.1:{server.server_port}'
     try:
@@ -28,17 +32,18 @@ for require_headers in (False, True):
         print(result.stderr, file=sys.stderr)
         assert result.returncode == 0, f'Smoke exited {result.returncode}'
         assert 'FIXTURE SMOKE PASSED' in result.stdout, 'App did not run its pipeline'
+        assert 'HIERARCHY SMOKE PASSED' in result.stdout, 'App did not exercise the seeded hierarchy'
         assert Fixture.starts == 1, f'Reattach resent a message ({Fixture.starts} starts)'
         assert Fixture.chat_profiles == ['default'], 'New-session profile leaked into an existing conversation'
         assert Fixture.uploaded, 'Multipart upload was not exercised'
-        assert not Fixture.sessions, 'Disposable fixture session was not cleaned up'
+        assert set(Fixture.sessions) == seeded_ids, 'Disposable session leaked or hierarchy seeds were removed'
         if require_headers:
             seen = set(Fixture.header_paths)
             required = {('GET', '/health'), ('GET', '/api/auth/status'), ('POST', '/api/auth/login'), ('GET', '/api/sessions'), ('POST', '/api/upload'), ('GET', '/api/chat/stream'), ('GET', '/api/chat/cancel'), ('POST', '/api/approval/respond'), ('POST', '/api/clarify/respond'), ('POST', '/api/auth/logout')}
             assert required <= seen, f'Missing required-header routes: {required - seen}'
             assert Fixture.header_paths.count(('GET', '/api/chat/stream')) == 2, 'Initial/replay SSE did not both pass the header gate'
         mode = 'required Service Token + custom headers' if require_headers else 'legacy no-header compatibility'
-        print(f'PASS ({mode}): real app auth/session/upload/SSE interrupt+replay/panels/logout; exactly one chat start; fixture cleaned.')
+        print(f'PASS ({mode}): real app auth/session/upload/SSE interrupt+replay/panels/logout; exactly one chat start; disposable session cleaned; hierarchy seeds retained.')
     finally:
         server.shutdown()
         server.server_close()

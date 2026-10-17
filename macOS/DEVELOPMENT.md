@@ -14,6 +14,8 @@ The Mac target is independent of the iOS Xcode project. Do not apply iOS simulat
 - **`RunProjection`**: replay-cursor de-duplication, text/reasoning/tool/request projection. `done` is not treated as socket end; `stream_end`, cancel and errors are terminal.
 - **`MacComposer`**: native NSTextView and a tested marked-text send gate. No send through an active IME composition.
 - **`NativeMarkdown`**: selectable native attributed inline Markdown, simple headings and fenced-code blocks with copying. No webview or remote HTML execution. Rich tables/math/media are not claimed.
+- **`SessionHierarchy` / `SessionDisclosureState`**: macOS-only, dependency-free projection of producer-marked delegated subagents. Iterative forest construction/traversal removes cyclic parent edges, retains orphan rows, de-duplicates IDs first-row-wins, preserves exact raw IDs and existing root/sibling order, and aggregates reported descendant activity. Disclosure stores IDs only in memory, scoped to the connected server URL; search payloads never prune it.
+- **`SidebarSessionRow`**: separate sibling disclosure/selection buttons, nested indentation, descendant/activity/selected-branch labels and exact-row context actions. Indentation caps at eight levels for narrow sidebars; deeper rows retain the full hierarchy and show their nesting level.
 - **`MacApplication`, `ConversationView`, `ServerPanels`**: native views. Workspace/skills/memory/tasks/insights are read-only; destructive session deletion always uses a confirmation UI.
 
 Small webui memory and bounded-download excerpts are retained in `UpstreamAdapters.swift` because their upstream files also depend on the unlinked direct-Hermes stack. `Package.swift` explicitly allowlists sources and excludes all unrelated upstream subtrees/resources, avoiding Xcode-only asset and string-catalog compilers.
@@ -35,11 +37,13 @@ python3 macOS/Tests/run_smoke.py
 
 Verified results for this implementation:
 
-- **35 Swift Testing tests passed**, retaining all 25 baseline tests and adding required-header health-before-auth, per-server header Keychain restoration/removal/password independence, arbitrary URL edits/paste/selection draft isolation, strict validation/injection/reserved/duplicate policies, Cloudflare-specific non-echoing errors, immutable delayed-connect headers, full origin comparison, case-insensitive redirect stripping, fail-closed credential POST redirects and local forgetting after a refused remote logout. The ownership regressions use deterministic delayed URLProtocol responses, not timing sleeps. The original 17 ownership fixes and new header-required connection/remote-logout regressions were observed RED→GREEN; additional policy/security tests cover their boundaries.
-- **Headless fixture smoke passed** using the actual app store and original networking: password login/auth verification, model/provider/profile/workspace catalog decoding, create/rename/pin/archive/restore/update/search, real multipart upload, a deliberately interrupted real HTTP SSE connection, replay without a second chat start, authoritative history readback, workspace text read, skills/content, memory, cron list/output, insights, delete and logout. The runner asserts exactly **one** chat start, one upload was exercised and the fixture session was removed. It also checks a new-session profile cannot leak into an existing conversation's send.
+- **45 Swift Testing tests passed**, retaining all 35 v0.1.1 tests (25 original baseline plus 10 header regressions). The retained checks cover required-header health-before-auth, per-server header Keychain restoration/removal/password independence, arbitrary URL edits/paste/selection draft isolation, strict validation/injection/reserved/duplicate policies, Cloudflare-specific non-echoing errors, immutable delayed-connect headers, full origin comparison, case-insensitive redirect stripping, fail-closed credential POST redirects and local forgetting after a refused remote logout. The ownership regressions use deterministic delayed URLProtocol responses, not timing sleeps. The original 17 ownership fixes and new header-required connection/remote-logout regressions were observed RED→GREEN; additional policy/security tests cover their boundaries.
+- **Headless fixture smoke passed** using the actual app store and original networking: password login/auth verification, model/provider/profile/workspace catalog decoding, create/rename/pin/archive/restore/update/search, real multipart upload, a deliberately interrupted real HTTP SSE connection, replay without a second chat start, authoritative history readback, workspace text read, skills/content, memory, cron list/output, insights, delete and logout. The runner asserts exactly **one** chat start, one upload was exercised and the fixture session was removed. It also checks a new-session profile cannot leak into an existing conversation's send. Five explicit hierarchy seeds remain; the disposable smoke-created session is removed.
 - The temporary Keychain tests use random service names and clean up their own items. They do not read production passwords.
 - **Required-header fixture smoke passed**: an optional fake Service Token + generic-header gate protects every route, including `/health` and initial/replay SSE. The actual app connection-configuration/store path persists headers to an isolated random-service Keychain, recreates the store to restore them with remember-password disabled, then runs auth/catalog/session/upload/interrupted-SSE/replay/file-preview/panels/Stop/approval/clarification/logout. Initial and replay SSE both pass the gate, exactly one chat start occurs, and logout removes the headers. The fixture rejects missing headers before exposing its marker. This path was observed failing before header-aware smoke support, then passing.
 - **Two-origin real HTTP redirect smoke passed**: separate loopback servers receive actual Foundation JSON, bounded-download, media and native SSE requests. Same-origin redirects preserve headers; second-origin redirects and directly requested external media receive none. A 307 password POST never reaches the second origin. Built-in JSON/SSE Accept and JSON/multipart Content-Type take precedence. Unit tests additionally cover scheme/host/effective-port comparison and mixed-case field removal. The existing upstream redirect delegate is unchanged; its live-edit race is avoided by immutable per-connection providers.
+
+**Hierarchy checks:** 10 additional Swift tests cover actual snake-case wire decoding, metadata-only membership (excluding cron/fork/compression/continuation/title guesses), nested ordering/collapse/activity, hidden-child flat search with parent context, missing owners, cycle/self-parent safety, first-row duplicate policy, literal IDs, a 4,096-row deep chain, refresh/search/server/disconnect disclosure lifecycle, selected-child ownership changes and read-only selection/send guarding through the actual store. Malformed-cycle rendering was observed RED (missing rows/duplicate identity), then GREEN; activity fallback was observed RED (0 instead of 2), then GREEN. Initial feature/API tests also failed before implementation. Both real HTTP auth smoke modes now assert default collapse, nested disclosure, reported active descendant counts, visible orphan, read-only worker history, selected-branch context after explicit collapse, refresh stability and server-side search finding a hidden grandchild. The fixture seeds were first absent (RED), and the runner then rejected the old app without the hierarchy smoke marker (RED), before both modes passed.
 
 The Python server is an **explicit protocol fixture**, not a bundled runtime, live Hermes agent or substitute for production verification. Payload shapes are derived from upstream contracts and the read-only webui source reference. No real model is called and no production session is modified. Authentication/streaming against a user's live authenticated server remain a separate acceptance check.
 
@@ -57,6 +61,12 @@ Selection-sensitive operations capture client, connection address/generation, se
 | Session settings and mutation readback | `delayedSessionSettingsCannotRetargetAnotherDraft`, `delayedMutationReadbackCannotRetargetAnotherDraft` | RED → GREEN |
 | Reattach status/history | `delayedReattachStatusCannotAttachToAnotherSelection`, `delayedReattachStreamStatusCannotClearAnotherRun`, `delayedReattachHistoryCannotInstallAnotherSession` | RED → GREEN |
 | Related connection/selection paths | delayed Stop/history, new session, logout, each catalog stage, input responses/pending probes, failures and busy cleanup | RED → GREEN |
+
+### Sidebar hierarchy policy
+
+Only `raw_source`, `source_tag` or `session_source` explicitly identifying `subagent` qualifies a row for nesting. A parent ID or `relationship_type=child_session` alone is insufficient: the producer uses those for other relationships too. Explicit fork/compression/continuation metadata excludes nesting. Existing upstream decoders/models are unchanged. Producer proof is read-only `api/models.py` source overlay (6159–6166) and state-row projection (7752–7778), plus `api/agent_sessions.py` (376–390). Broader browser lineage/fork grouping is deliberately not copied. Only returned rows are used: no parent-fetch requests, lineage resolution or server mutations are added.
+
+Branches start collapsed. Refresh preserves choices for surviving IDs; partial search results do not prune them. Newly discovered/moved ancestors of a selected child open its path so automatic ownership updates do not hide it. An explicit collapse keeps its content selected and labels the containing branch; unchanged refresh does not undo that choice. Search (Return) displays every returned match as a flat row labeled with its available parent title or exact missing-parent ID. Parent-not-in-list means unavailable in the current payload, not necessarily deleted. Missing-parent and cyclic-link subagents stay top-level with truthful context. Counts/activity describe returned descendants and server-reported stream/pending state, not a fabricated live worker tracker. Disconnect clears all disclosure IDs; neither titles nor transcripts are persisted by this feature.
 
 ## Independent native UI verification
 
@@ -87,12 +97,14 @@ Manual acceptance checklist (parent/release maintainer owns screenshots):
 7. Switch servers/conversations with identical IDs; draft/auth/history must not cross scopes. Quit/relaunch: URL/password persistence works; drafts are intentionally memory-only.
 8. Expand Connection Headers in welcome and disconnected Settings; add/remove generic rows and restore the Cloudflare pair. At 920×620 and in Settings, scroll to all fields/actions. Switch A→B→A by typing/paste/Saved servers; values must remain source-owned. Sign Out removes only the selected server's saved password/headers and clears displayed data. Dedicated Clear forgets headers independently of password. Disconnect alone must not stop server execution.
 
+9. The seeded sidebar starts with the welcome owner and orphan only. Expand welcome to see research/validation workers, then research to see citations. Check descendant counts, the active nested worker indicator, distinct chevron-versus-selection clicks and read-only child history. Collapse while citations is selected: content stays selected and the owner labels the branch. Search `citations` with Return: its flat match must be visible with missing-parent context. Clear search, refresh, test right-click actions on the exact worker (not its parent), and disconnect/reconnect to verify default collapse. Test narrow widths, deep indentation and VoiceOver/button labels.
+
 The implementation subagent did not launch a competing GUI session; independent packaged-app UI verification is delegated to the parent as requested.
 
 ## Packaging and release
 
 ```sh
-python3 macOS/scripts/build.py --version 0.1.1 --arch universal
+python3 macOS/scripts/build.py --version 0.1.2 --arch universal
 ```
 
 This builds arm64 and cross-compiles x86_64 with a macOS 14 deployment target, combines them with `lipo`, generates `.icns` from upstream's light icon, embeds version/license/notices, ad-hoc signs with hardened runtime, verifies the signature, makes a `ditto` ZIP, creates/verifies a compressed DMG with an Applications symlink, and writes SHA-256 sums. `--arch arm64` omits the Intel slice. `--skip-dmg` is available if disk-image creation is unavailable. No GitHub Actions or Apple account is required.
@@ -100,9 +112,9 @@ This builds arm64 and cross-compiles x86_64 with a macOS 14 deployment target, c
 Expected paths:
 
 - `dist/Hermex.app`
-- `dist/Hermex-Mac-0.1.1-universal.zip`
-- `dist/Hermex-Mac-0.1.1-universal.dmg`
-- `dist/Hermex-Mac-0.1.1-universal-SHA256SUMS.txt`
+- `dist/Hermex-Mac-0.1.2-universal.zip`
+- `dist/Hermex-Mac-0.1.2-universal.dmg`
+- `dist/Hermex-Mac-0.1.2-universal-SHA256SUMS.txt`
 
 Real verification performed: `codesign --verify --deep --strict` passed; `lipo -archs` reported `x86_64 arm64`; `vtool -show-build` reported minimum OS 14.0 for both slices; `unzip -t` reported no errors; `hdiutil verify` reported a valid checksum. Neither Apple notarization nor an Intel runtime test is claimed. Test execution is Apple silicon on macOS 27.
 

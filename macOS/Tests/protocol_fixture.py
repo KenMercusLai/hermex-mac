@@ -276,6 +276,20 @@ def start(port=0, seed=False, require_headers=False):
     Fixture.require_headers = require_headers
     if seed:
         Fixture.sessions['fixture-welcome'] = {'session_id': 'fixture-welcome', 'title': 'Welcome to the protocol fixture', 'workspace': '/fixture/workspace', 'model': 'fixture-model', 'model_provider': 'fixture', 'messages': [{'role': 'assistant', 'content': '# Native Hermex for Mac\n\nThis is an **explicit test fixture**, not a live Hermes agent.\n\n```swift\nprint("Hello, Mac")\n```'}], 'message_count': 1}
+        for sid, title, parent in [
+            ('fixture-worker', 'Fixture worker: research', 'fixture-welcome'),
+            ('fixture-nested', 'Fixture nested worker: citations', 'fixture-worker'),
+            ('fixture-sibling', 'Fixture worker: validation', 'fixture-welcome'),
+            ('fixture-orphan', 'Fixture orphan: owner unavailable', 'fixture-missing-owner'),
+        ]:
+            Fixture.sessions[sid] = {
+                'session_id': sid, 'title': title, 'parent_session_id': parent,
+                'relationship_type': 'child_session', 'source_tag': 'subagent',
+                'raw_source': 'subagent', 'session_source': 'subagent', 'read_only': True,
+                'is_streaming': sid == 'fixture-nested',
+                'messages': [{'role': 'assistant', 'content': 'Explicit fixture subagent history. No model was called.'}],
+                'message_count': 1,
+            }
     server = http.server.ThreadingHTTPServer(('127.0.0.1', port), Fixture)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
