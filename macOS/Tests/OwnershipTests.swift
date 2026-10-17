@@ -30,6 +30,7 @@ private final class DelayedFixture {
         let path: String
         let query: [String: String]
         let body: [String: Any]
+        let headers: [String: String]
     }
     let address = "https://\(UUID().uuidString.lowercased()).invalid"
     private let lock = NSLock()
@@ -88,7 +89,8 @@ private final class DelayedFixture {
         }
         let request = Request(path: proto.request.url!.path,
             query: Dictionary(uniqueKeysWithValues: (URLComponents(url: proto.request.url!, resolvingAgainstBaseURL: false)?.queryItems ?? []).map { ($0.name, $0.value ?? "") }),
-            body: (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:])
+            body: (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:],
+            headers: proto.request.allHTTPHeaderFields ?? [:])
         lock.lock()
         requests.append(request)
         let count = requests.filter { $0.path == request.path }.count
@@ -114,6 +116,34 @@ private final class DelayedFixture {
         default: return #"{"ok":true}"#
         }
     }
+}
+
+@Test @MainActor func delayedConnectKeepsImmutableHeaderSnapshotWhileEditorChangesServers() async throws {
+    let a = DelayedFixture(); defer { a.close() }
+    let b = DelayedFixture(); defer { b.close() }
+    let store = MacStore(persistence: false, sessionFactory: a.makeSession)
+    store.address = a.address
+    store.connectionHeaders = [CustomHeader(name: "X-Token", value: "fixture-only-a")]
+    a.hold("/health")
+    let task = Task { await store.connect(address: a.address, password: "", remember: false) }
+    await a.waitUntilHeld()
+    store.address = b.address
+    store.connectionHeaders = [CustomHeader(name: "X-Token", value: "fixture-only-b")]
+    a.release()
+    await task.value
+    #expect(store.connected)
+    store.address = b.address
+    store.connectionHeaders = [CustomHeader(name: "X-Token", value: "fixture-only-b-edited")]
+    _ = try await store.api?.health()
+    #expect(!store.errorMessage(MacFailure.message("refused fixture-only-a")).contains("fixture-only-a"))
+    for path in ["/health", "/api/auth/status", "/api/models", "/api/providers", "/api/profiles", "/api/workspaces", "/api/sessions"] {
+        #expect(!a.seen(path).isEmpty)
+        #expect(a.seen(path).allSatisfy { request in request.headers.first { $0.key.lowercased() == "x-token" }?.value == "fixture-only-a" })
+    }
+    store.disconnect()
+    await store.connect(address: b.address, password: "", remember: false)
+    #expect(b.seen("/health").first?.headers.first { $0.key.lowercased() == "x-token" }?.value == "fixture-only-b-edited")
+    store.disconnect()
 }
 
 @Test @MainActor func delayedSelectionFailuresDoNotOverwriteCurrentError() async throws {

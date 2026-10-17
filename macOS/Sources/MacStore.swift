@@ -32,7 +32,13 @@ struct SessionDraft {
     @Published var error: String?
     @Published var connectionLabel = "Not connected"
     @Published var servers: [SavedServer] = []
-    @Published var address = "http://127.0.0.1:8787"
+    @Published var address = "http://127.0.0.1:8787" {
+        didSet { if oldValue != address { changeHeaderScope() } }
+    }
+    @Published var connectionHeaders = ConnectionHeaders.placeholders
+    private var headerDraftOwner: String?
+    private var headerDrafts: [String: [CustomHeader]] = [:]
+    private var connectedHeaders: [CustomHeader] = []
     @Published var sessions: [SessionSummary] = []
     @Published var selectedID: String?
     @Published var detail: SessionDetail?
@@ -71,6 +77,7 @@ struct SessionDraft {
     // selection that issued it, including A -> B -> A navigation.
     private struct Ownership {
         let client: APIClient
+        let headers: [CustomHeader]
         let address: String
         let connection: Int
         let selection: Int
@@ -78,7 +85,7 @@ struct SessionDraft {
     }
     private func ownership() -> Ownership? {
         guard let api, let connectedAddress else { return nil }
-        return Ownership(client: api, address: connectedAddress, connection: generation,
+        return Ownership(client: api, headers: connectedHeaders, address: connectedAddress, connection: generation,
                          selection: selectionGeneration, sessionID: selectedID)
     }
     private func ownsConnection(_ owner: Ownership) -> Bool {
@@ -102,25 +109,70 @@ struct SessionDraft {
         if persistence {
             do {
                 if let saved = try ConnectionRegistry(vault: vault).load() { servers = saved.servers; address = saved.last }
-            } catch { self.error = error.localizedDescription }
+            } catch { self.error = errorMessage(error) }
+        }
+        changeHeaderScope()
+    }
+
+    private func headers(for url: URL) throws -> [CustomHeader] {
+        if headerDraftOwner == url.absoluteString { return connectionHeaders }
+        if let draft = headerDrafts[url.absoluteString] { return draft }
+        let saved = persistence ? try ConnectionHeaderVault(vault: vault).load(for: url) : []
+        return saved.isEmpty ? ConnectionHeaders.placeholders : saved
+    }
+
+    private func changeHeaderScope() {
+        if let owner = headerDraftOwner { headerDrafts[owner] = connectionHeaders }
+        headerDraftOwner = nil
+        connectionHeaders = ConnectionHeaders.placeholders
+        guard let url = try? ServerAddress.parse(address) else { return }
+        do {
+            connectionHeaders = try headers(for: url)
+            headerDraftOwner = url.absoluteString
+        } catch { self.error = "Saved connection headers could not be loaded. Clear them and re-enter the Service Token." }
+    }
+
+    func errorMessage(_ error: Error) -> String {
+        ConnectionFailure.message(error, headers: connectedHeaders + connectionHeaders)
+    }
+
+    func addCloudflareHeaders() {
+        for row in ConnectionHeaders.placeholders where !connectionHeaders.contains(where: { $0.sanitizedName.caseInsensitiveCompare(row.name) == .orderedSame }) {
+            connectionHeaders.append(row)
         }
     }
 
-    func connect(address raw: String, password enteredPassword: String, remember: Bool) async {
+    func clearConnectionHeaders() {
+        do {
+            let url = try ServerAddress.parse(address)
+            if persistence { try ConnectionHeaderVault(vault: vault).clear(for: url) }
+            headerDrafts.removeValue(forKey: url.absoluteString)
+            connectionHeaders = ConnectionHeaders.placeholders
+            headerDraftOwner = url.absoluteString
+        } catch { self.error = errorMessage(error) }
+    }
+
+    func connect(address raw: String, password enteredPassword: String, remember: Bool, customHeaders: [CustomHeader]? = nil) async {
         guard !busy else { return }
         disconnect()
         let current = generation
         busy = true
         error = nil
+        var attemptHeaders: [CustomHeader] = []
         defer { if current == generation { busy = false } }
         do {
             let url = try ServerAddress.parse(raw)
             let connectionAddress = url.absoluteString
+            let snapshot = try ConnectionHeaders.validated(customHeaders ?? headers(for: url))
+            attemptHeaders = snapshot
             address = connectionAddress
+            connectionHeaders = snapshot.isEmpty ? ConnectionHeaders.placeholders : snapshot
+            headerDraftOwner = connectionAddress
+            if persistence { try ConnectionHeaderVault(vault: vault).save(snapshot, for: url) }
             let session = sessionFactory()
             transport = session
-            let client = APIClient(baseURL: url, session: session, customHeaderProvider: { [] })
-            _ = try await client.health()
+            let client = APIClient(baseURL: url, session: session, customHeaderProvider: { snapshot })
+            try await ConnectionFailure.health(client: client, url: url, session: session, headers: snapshot)
             guard current == generation else { return }
             let status = try await client.authStatus()
             guard current == generation else { return }
@@ -130,7 +182,7 @@ struct SessionDraft {
                 guard !password.isEmpty else { throw MacFailure.message("This server requires a password. Enter its webui password to connect.") }
                 let login = try await client.login(password: password)
                 guard current == generation else { return }
-                guard login.ok == true else { throw MacFailure.message(login.error ?? login.message ?? "Sign in failed.") }
+                guard login.ok == true else { throw MacFailure.message("WebUI password sign-in failed. Check the WebUI password (not the Cloudflare Service Token).") }
                 let verified = try await client.authStatus()
                 guard current == generation else { return }
                 guard verified.loggedIn == true || verified.authEnabled == false else { throw MacFailure.message("The server did not establish an authenticated session.") }
@@ -138,6 +190,7 @@ struct SessionDraft {
                 if !remember, persistence { try vault.delete(account: connectionAddress) }
             }
             api = client
+            connectedHeaders = snapshot
             connectedAddress = connectionAddress
             address = connectionAddress
             connected = true
@@ -151,7 +204,7 @@ struct SessionDraft {
             await loadCatalog()
         } catch {
             guard current == generation else { return }
-            self.error = error.localizedDescription
+            self.error = ConnectionFailure.message(error, headers: attemptHeaders, secrets: [enteredPassword])
             connected = false
             connectionLabel = "Connection failed"
         }
@@ -164,6 +217,7 @@ struct SessionDraft {
         streamTask?.cancel(); streamTask = nil
         transport?.invalidateAndCancel(); transport = nil
         api = nil
+        connectedHeaders = []
         connectedAddress = nil
         busy = false
         error = nil
@@ -178,14 +232,27 @@ struct SessionDraft {
 
     func logout() async {
         guard let owner = ownership() else { return }
+        var remoteLogoutUnconfirmed = false
         do {
             let reply = try await owner.client.logout()
-            guard ownsConnection(owner) else { return }
-            guard reply.ok != false else { throw MacFailure.message(reply.error ?? "The server refused logout.") }
-            if persistence { try vault.delete(account: owner.address) }
+            remoteLogoutUnconfirmed = reply.ok != true
+        } catch { remoteLogoutUnconfirmed = true }
+        guard ownsConnection(owner) else { return }
+        // Explicit local sign-out must still forget credentials when the proxy or
+        // server is unreachable. Never let an obsolete logout clear another scope.
+        do {
+            if persistence {
+                try vault.delete(account: owner.address)
+                try ConnectionHeaderVault(vault: vault).clear(for: ServerAddress.parse(owner.address))
+            }
+            headerDrafts.removeValue(forKey: owner.address)
+            if headerDraftOwner == owner.address { connectionHeaders = ConnectionHeaders.placeholders }
             drafts = drafts.filter { !$0.key.hasPrefix(owner.address + "|") }
             disconnect()
-        } catch { if ownsConnection(owner) { self.error = "Logout failed: " + error.localizedDescription } }
+            if remoteLogoutUnconfirmed {
+                self.error = "Signed out locally and forgot saved credentials. Server logout could not be confirmed; the remote session may remain valid."
+            }
+        } catch { self.error = "Could not forget saved credentials: " + errorMessage(error) }
     }
 
     func reloadSessions() async throws {
@@ -204,7 +271,7 @@ struct SessionDraft {
 
     func refresh() async {
         guard let owner = ownership() else { return }
-        do { try await reloadSessions() } catch { if ownsConnection(owner) { self.error = error.localizedDescription } }
+        do { try await reloadSessions() } catch { if ownsConnection(owner) { self.error = errorMessage(error) } }
     }
 
     func loadCatalog() async {
@@ -228,7 +295,7 @@ struct SessionDraft {
             guard ownsConnection(owner) else { return }
             workspaces = w.workspaces ?? []
             if ownsSelection(owner), workspace.isEmpty { workspace = w.last ?? "" }
-        } catch { if ownsConnection(owner) { self.error = "Some server controls are unavailable: " + error.localizedDescription } }
+        } catch { if ownsConnection(owner) { self.error = "Some server controls are unavailable: " + errorMessage(error) } }
     }
 
     func saveDraft() { if connected { drafts[scope] = SessionDraft(text: draft, attachments: attachments) } }
@@ -250,7 +317,7 @@ struct SessionDraft {
             guard current == selectionGeneration else { return }
             guard let session = result.session else { throw MacFailure.message("The server did not return a session.") }
             install(session)
-        } catch { if current == selectionGeneration { self.error = error.localizedDescription } }
+        } catch { if current == selectionGeneration { self.error = errorMessage(error) } }
     }
 
     func install(_ session: SessionDetail) {
@@ -295,7 +362,7 @@ struct SessionDraft {
                 guard ownsSelection(owner) else { return }
                 if let session = fetched.session { install(session) }
             }
-        } catch { if ownsSelection(owner) { self.error = error.localizedDescription } }
+        } catch { if ownsSelection(owner) { self.error = errorMessage(error) } }
     }
 
     func saveSessionControls() async {
@@ -306,7 +373,7 @@ struct SessionDraft {
             guard let session = response.session else { throw MacFailure.message("The server did not confirm the session settings.") }
             install(session)
             try await reloadSessions()
-        } catch { if ownsSelection(owner) { self.error = error.localizedDescription } }
+        } catch { if ownsSelection(owner) { self.error = errorMessage(error) } }
     }
 
     func loadOlder() async {
@@ -316,7 +383,7 @@ struct SessionDraft {
             guard ownsSelection(owner), let session = result.session else { return }
             messages = (session.messages ?? []) + messages
             detail = session
-        } catch { if ownsSelection(owner) { self.error = error.localizedDescription } }
+        } catch { if ownsSelection(owner) { self.error = errorMessage(error) } }
     }
 
     func upload(_ urls: [URL]) async {
@@ -339,7 +406,7 @@ struct SessionDraft {
                 attachments.append(PendingAttachment(name: result.filename ?? filename, path: path, mime: result.mime ?? "application/octet-stream", size: result.size, isImage: result.isImage == true))
             }
             saveDraft()
-        } catch { if ownsSelection(owner) { self.error = error.localizedDescription } }
+        } catch { if ownsSelection(owner) { self.error = errorMessage(error) } }
     }
 
     func send() async {
@@ -359,7 +426,7 @@ struct SessionDraft {
             run = RunProjection()
             streamID = stream
             attach(stream, owner: owner)
-        } catch { if ownsSelection(owner) { self.error = error.localizedDescription + " Check history before retrying a send; its delivery may be uncertain." } }
+        } catch { if ownsSelection(owner) { self.error = errorMessage(error) + " Check history before retrying a send; its delivery may be uncertain." } }
     }
 
     private func attach(_ stream: String, owner: Ownership) {
@@ -371,13 +438,13 @@ struct SessionDraft {
         streamTask = Task { [weak self] in
             guard let self else { return }
             do {
-                try await MacStream.consume(client: api, streamID: stream, after: after) { [weak self] frame, event in
+                try await MacStream.consume(client: api, streamID: stream, after: after, headers: owner.headers) { [weak self] frame, event in
                     guard let self, self.ownsSelection(owner), self.streamID == stream else { return true }
                     return self.run.apply(event, sequence: frame.sequence)
                 }
                 guard !Task.isCancelled, self.ownsSelection(owner), self.streamID == stream else { return }
                 self.streaming = false; self.streamDisconnected = false; self.streamID = nil
-                if let failure = self.run.error { self.error = failure }
+                if let failure = self.run.error { self.error = self.errorMessage(MacFailure.message(failure)) }
                 let result = try await api.session(id: id, messageLimit: 100, expandRenderable: true)
                 guard !Task.isCancelled, self.ownsSelection(owner) else { return }
                 if let session = result.session { self.install(session) }
@@ -386,7 +453,7 @@ struct SessionDraft {
             } catch {
                 guard !Task.isCancelled, self.ownsSelection(owner) else { return }
                 self.streamDisconnected = true
-                self.error = error.localizedDescription
+                self.error = errorMessage(error)
                 // Keep streamID, projection and cursor; reattach NEVER calls startChat.
             }
         }
@@ -423,7 +490,7 @@ struct SessionDraft {
             }
             guard ownsSelection(owner) else { return }
             await checkPending()
-        } catch { if ownsSelection(owner), streamID == expectedStream { self.error = error.localizedDescription } }
+        } catch { if ownsSelection(owner), streamID == expectedStream { self.error = errorMessage(error) } }
     }
 
     func stop() async {
@@ -438,7 +505,7 @@ struct SessionDraft {
             guard ownsSelection(owner), self.streamID == nil else { return }
             if let session = history.session { install(session) }
             run = RunProjection()
-        } catch { if ownsSelection(owner), self.streamID == streamID || self.streamID == nil { self.error = error.localizedDescription } }
+        } catch { if ownsSelection(owner), self.streamID == streamID || self.streamID == nil { self.error = errorMessage(error) } }
     }
 
     func checkPending() async {
@@ -449,7 +516,7 @@ struct SessionDraft {
             let clarify = try await owner.client.clarifyPending(sessionID: id)
             guard ownsSelection(owner) else { return }
             run.approval = approval.pending; run.clarification = clarify.pending
-        } catch { if ownsSelection(owner) { self.error = "Could not check pending input: " + error.localizedDescription } }
+        } catch { if ownsSelection(owner) { self.error = "Could not check pending input: " + errorMessage(error) } }
     }
 
     func approve(_ choice: ApprovalChoice) async {
@@ -460,7 +527,7 @@ struct SessionDraft {
             guard response.ok == true else { throw MacFailure.message("Approval was not accepted. Refresh pending input.") }
             run.approval = nil
             await checkPending()
-        } catch { if ownsSelection(owner) { self.error = error.localizedDescription } }
+        } catch { if ownsSelection(owner) { self.error = errorMessage(error) } }
     }
 
     func clarify(_ text: String) async {
@@ -471,7 +538,7 @@ struct SessionDraft {
             guard response.ok == true else { throw MacFailure.message("Clarification was not accepted. Refresh pending input.") }
             run.clarification = nil
             await checkPending()
-        } catch { if ownsSelection(owner) { self.error = error.localizedDescription } }
+        } catch { if ownsSelection(owner) { self.error = errorMessage(error) } }
     }
 
     func newSession() async {
@@ -492,7 +559,7 @@ struct SessionDraft {
             errorOwner = ownership() ?? owner
             panel = "Chat"
             try await reloadSessions()
-        } catch { if ownsSelection(errorOwner) { self.error = error.localizedDescription } }
+        } catch { if ownsSelection(errorOwner) { self.error = errorMessage(error) } }
     }
 }
 

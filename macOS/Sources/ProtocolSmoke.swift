@@ -2,16 +2,79 @@
 import Foundation
 
 enum ProtocolSmoke {
-    @MainActor static func run(address: String) async throws {
+    @MainActor static func redirects(address: String, secondAddress: String) async throws {
+        let first = try ServerAddress.parse(address)
+        let second = try ServerAddress.parse(secondAddress)
+        let session = URLSession(configuration: .ephemeral)
+        defer { session.invalidateAndCancel() }
+        for url in [first, second] {
+            guard ["127.0.0.1", "localhost", "::1"].contains(url.host ?? "") else { throw MacFailure.message("Redirect smoke only accepts loopback fixtures.") }
+            let (data, _) = try await session.data(from: url.appendingPathComponent("health"))
+            let marker = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+            guard marker?["fixture"] as? String == "hermex-mac-redirect-v1" else { throw MacFailure.message("Refusing redirect smoke against a non-fixture server.") }
+        }
+        let headers = [CustomHeader(name: "CF-Access-Client-Id", value: "fixture-only-id"), CustomHeader(name: "CF-Access-Client-Secret", value: "fixture-only-secret"), CustomHeader(name: "X-Fixture-Connection", value: "fixture-only-generic"), CustomHeader(name: "accept", value: "incorrect-custom-accept"), CustomHeader(name: "content-type", value: "incorrect-custom-type")]
+        for kind in ["same", "cross"] {
+            let base = first.appendingPathComponent(kind)
+            let api = APIClient(baseURL: base, session: session, customHeaderProvider: { headers })
+            _ = try await api.health()
+            _ = try await api.sendBoundedData(endpoint: .rawFile(sessionID: "fixture", path: "fixture.txt"), limit: 1024)
+            _ = try await api.downloadData(from: base.appendingPathComponent("media"), using: session, mapsUnauthorized: false)
+            try await MacStream.consume(client: api, streamID: "fixture", after: nil, headers: headers) { _, event in
+                if case .streamEnd = event { return true }
+                return false
+            }
+            if kind == "same" { _ = try await api.login(password: "fixture-only-password") }
+            else {
+                do {
+                    _ = try await api.login(password: "fixture-only-password")
+                    throw MacFailure.message("A cross-origin credential POST redirect was followed.")
+                } catch APIError.http(let status, _) where status == 307 { }
+            }
+        }
+        let api = APIClient(baseURL: first, session: session, customHeaderProvider: { headers })
+        _ = try await api.downloadData(from: second.appendingPathComponent("capture/external-media"), using: session, mapsUnauthorized: false)
+        print("FIXTURE REDIRECT SMOKE PASSED: same-origin, second-origin JSON/media/bounded/SSE, external media, fail-closed password POST.")
+    }
+
+    @MainActor static func run(address: String, requireHeaders: Bool = false) async throws {
         let url = try ServerAddress.parse(address)
         guard ["127.0.0.1", "localhost", "::1"].contains(url.host ?? "") else { throw MacFailure.message("Protocol smoke only accepts an explicit loopback fixture.") }
-        let (data, _) = try await URLSession.shared.data(from: url.appendingPathComponent("health"))
+        let headers: [CustomHeader] = requireHeaders ? [
+            CustomHeader(name: ConnectionHeaders.clientID, value: "fixture-only-id"),
+            CustomHeader(name: ConnectionHeaders.clientSecret, value: "fixture-only-secret"),
+            CustomHeader(name: "X-Fixture-Connection", value: "fixture-only-generic"),
+            CustomHeader(name: "accept", value: "incorrect-custom-accept"),
+            CustomHeader(name: "content-type", value: "incorrect-custom-type")
+        ] : []
+        var probe = URLRequest(url: url.appendingPathComponent("health"))
+        headers.apply(to: &probe)
+        let probeSession = URLSession(configuration: .ephemeral)
+        defer { probeSession.invalidateAndCancel() }
+        let guardDelegate = CrossOriginHeaderStripper(baseURL: url, customHeaderProvider: { headers })
+        let (data, _) = try await probeSession.data(for: probe, delegate: guardDelegate)
         let marker = try JSONSerialization.jsonObject(with: data) as? [String: Any]
         guard marker?["fixture"] as? String == "hermex-mac-protocol-v1" else { throw MacFailure.message("Refusing smoke against a non-fixture server. Nothing was mutated.") }
-        let store = MacStore(persistence: false)
+        let vault = MacKeychain(service: "com.kenmercuslai.hermex-mac.protocol-smoke.\(UUID())")
+        defer {
+            try? vault.delete(account: "connections")
+            try? vault.delete(account: url.absoluteString)
+            try? ConnectionHeaderVault(vault: vault).clear(for: url)
+        }
+        var store = MacStore(persistence: requireHeaders, vault: vault)
         func require(_ passed: Bool, _ message: String) throws { if !passed { throw MacFailure.message(message) } }
+        store.address = address
+        store.connectionHeaders = headers.isEmpty ? ConnectionHeaders.placeholders : headers
         await store.connect(address: address, password: "hermex-fixture-only", remember: false)
         try require(store.connected, store.error ?? "Fixture sign-in failed")
+        if requireHeaders {
+            store.disconnect()
+            store = MacStore(vault: vault)
+            try require(store.connectionHeaders == headers, "Headers were not restored from the isolated Keychain after relaunch")
+            try require(try vault.read(account: url.absoluteString) == nil, "Remember-password false unexpectedly saved the WebUI password")
+            await store.connect(address: address, password: "hermex-fixture-only", remember: false)
+            try require(store.connected, store.error ?? "Restored-header connection failed")
+        }
         try require(!store.modelCatalog.isEmpty && !store.providers.isEmpty && !store.profiles.isEmpty && !store.workspaces.isEmpty, "Configuration catalog decoding failed")
         await store.newSession()
         guard let id = store.selectedID, let api = store.api else { throw MacFailure.message("Fixture create failed") }
@@ -63,10 +126,17 @@ enum ProtocolSmoke {
         try require(output.outputs?.count == 1, "Task output read failed")
         let insights = try await api.insights(days: 30)
         try require(insights.totalTokens == 36, "Insights read failed")
+        let stopped = try await api.cancelChat(streamID: "fixture-only-completed-stream")
+        try require(stopped.ok != false, "Stop request failed")
+        let approval = try await api.respondApproval(sessionID: id, choice: .deny, approvalID: "fixture-only-approval")
+        try require(approval.ok == true, "Approval response request failed")
+        let clarified = try await api.respondClarification(sessionID: id, response: "fixture-only-answer", clarifyID: "fixture-only-clarification")
+        try require(clarified.ok == true, "Clarification response request failed")
         await store.mutate(id, action: .delete)
         try require(store.selectedID == nil, "Delete did not clear conversation")
         await store.logout()
         try require(!store.connected, "Logout failed")
+        try require(try ConnectionHeaderVault(vault: vault).load(for: url).isEmpty, "Sign-out did not forget connection headers")
         print("FIXTURE SMOKE PASSED: app state + upstream auth/session/upload + native SSE interrupt/replay + read-only panels; no live server or model called.")
     }
 }
