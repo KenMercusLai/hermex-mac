@@ -1,6 +1,6 @@
 # Native macOS development
 
-The Mac target is independent of the iOS Xcode project. Do not apply iOS simulator/App Store signing instructions to it. There are no network dependencies in `Package.swift`; it compiles selected original portable Swift files in place and keeps the entire iOS project untouched.
+The Mac target is independent of the iOS Xcode project. Do not apply iOS simulator/App Store signing instructions to it. It compiles selected original portable Swift files in place and keeps the entire iOS project untouched. Sparkle is linked from a checksum-pinned official binary framework prepared by `macOS/scripts/sparkle_sdk.py`, without Xcode package resolution.
 
 ## Architecture
 
@@ -16,6 +16,7 @@ The Mac target is independent of the iOS Xcode project. Do not apply iOS simulat
 - **`NativeMarkdown`**: selectable native attributed inline Markdown, simple headings and fenced-code blocks with copying. No webview or remote HTML execution. Rich tables/math/media are not claimed.
 - **`SessionHierarchy` / `SessionDisclosureState`**: macOS-only, dependency-free projection of producer-marked delegated subagents. Iterative forest construction/traversal removes cyclic parent edges, retains orphan rows, de-duplicates IDs first-row-wins, preserves exact raw IDs and existing root/sibling order, and aggregates reported descendant activity. Disclosure stores IDs only in memory, scoped to the connected server URL; search payloads never prune it.
 - **`SidebarSessionRow`**: separate sibling disclosure/selection buttons, nested indentation, descendant/activity/selected-branch labels and exact-row context actions. Indentation caps at eight levels for narrow sidebars; deeper rows retain the full hierarchy and show their nesting level.
+- **`UpdateCoordinator` / `UpdateSettings` / `UpdateRestartGate`**: one startup Sparkle controller, independent of server authentication; Sparkle-backed persistent opt-outs and KVO-backed menu/settings state. Postponed restarts wait for busy/streaming/stream-ID activity, and an AppKit termination delegate provides a final guard against work beginning after postponement resumes. See [AUTOMATIC_UPDATES.md](AUTOMATIC_UPDATES.md) for key handling, signed-feed policy and the explicit ad-hoc signing blocker.
 - **`MacApplication`, `ConversationView`, `ServerPanels`**: native views. Workspace/skills/memory/tasks/insights are read-only; destructive session deletion always uses a confirmation UI.
 
 Small webui memory and bounded-download excerpts are retained in `UpstreamAdapters.swift` because their upstream files also depend on the unlinked direct-Hermes stack. `Package.swift` explicitly allowlists sources and excludes all unrelated upstream subtrees/resources, avoiding Xcode-only asset and string-catalog compilers.
@@ -35,7 +36,21 @@ bash macOS/scripts/test.sh
 python3 macOS/Tests/run_smoke.py
 ```
 
-Verified results for this implementation:
+### Automatic-update implementation verification
+
+The updater change retains all **45 previous tests**, and **50 Swift tests** plus
+**3 packaging/security Python tests** now pass. Both protocol-fixture modes and
+the two-origin redirect smoke still pass. Release arm64 and x86_64 builds compile.
+A real Sparkle CLI installer replaces an isolated Universal scratch app from
+older bundle version 0.1.2 to 0.1.3; the test rejects tampered feeds and archives
+and reads back the installed version, executable hash and code signature.
+The older smoke bundle is a synthetic baseline using this updater-enabled code,
+not a claim that the published updater-free 0.1.2 can self-update. No test app is
+launched. Final hardened distribution packaging is blocked pending the explicit
+signing-policy decision documented in [AUTOMATIC_UPDATES.md](AUTOMATIC_UPDATES.md); no final v0.1.3
+ZIP/DMG or GUI relaunch acceptance is claimed.
+
+Verified results for the earlier v0.1.2 implementation:
 
 - **45 Swift Testing tests passed**, retaining all 35 v0.1.1 tests (25 original baseline plus 10 header regressions). The retained checks cover required-header health-before-auth, per-server header Keychain restoration/removal/password independence, arbitrary URL edits/paste/selection draft isolation, strict validation/injection/reserved/duplicate policies, Cloudflare-specific non-echoing errors, immutable delayed-connect headers, full origin comparison, case-insensitive redirect stripping, fail-closed credential POST redirects and local forgetting after a refused remote logout. The ownership regressions use deterministic delayed URLProtocol responses, not timing sleeps. The original 17 ownership fixes and new header-required connection/remote-logout regressions were observed RED→GREEN; additional policy/security tests cover their boundaries.
 - **Headless fixture smoke passed** using the actual app store and original networking: password login/auth verification, model/provider/profile/workspace catalog decoding, create/rename/pin/archive/restore/update/search, real multipart upload, a deliberately interrupted real HTTP SSE connection, replay without a second chat start, authoritative history readback, workspace text read, skills/content, memory, cron list/output, insights, delete and logout. The runner asserts exactly **one** chat start, one upload was exercised and the fixture session was removed. It also checks a new-session profile cannot leak into an existing conversation's send. Five explicit hierarchy seeds remain; the disposable smoke-created session is removed.
@@ -104,19 +119,22 @@ The implementation subagent did not launch a competing GUI session; independent 
 ## Packaging and release
 
 ```sh
-python3 macOS/scripts/build.py --version 0.1.2 --arch universal
+python3 macOS/scripts/build.py --version 0.1.3 --arch universal \
+  --signing-identity 'Developer ID Application: YOUR IDENTITY'
 ```
 
-This builds arm64 and cross-compiles x86_64 with a macOS 14 deployment target, combines them with `lipo`, generates `.icns` from upstream's light icon, embeds version/license/notices, ad-hoc signs with hardened runtime, verifies the signature, makes a `ditto` ZIP, creates/verifies a compressed DMG with an Applications symlink, and writes SHA-256 sums. `--arch arm64` omits the Intel slice. `--skip-dmg` is available if disk-image creation is unavailable. No GitHub Actions or Apple account is required.
+**Updater signing policy:** default ad-hoc packaging now fails closed because Hardened Runtime library validation rejects Sparkle without a matching Team ID. Use a matching Developer ID for the app and nested code, or explicitly approve `--allow-adhoc-library-validation`. See [AUTOMATIC_UPDATES.md](AUTOMATIC_UPDATES.md); that trade-off must not be silent.
+
+This builds arm64 and cross-compiles x86_64 with a macOS 14 deployment target, combines them with `lipo`, generates `.icns` from upstream's light icon, embeds version/license/notices, signs the framework/helpers inside-out and the host with hardened runtime, verifies the signature, makes a `ditto` ZIP, creates/verifies a compressed DMG with an Applications symlink, and writes SHA-256 sums. `--arch arm64` omits the Intel slice. `--skip-dmg` is available if disk-image creation is unavailable. No GitHub Actions or Apple account is required.
 
 Expected paths:
 
 - `dist/Hermex.app`
-- `dist/Hermex-Mac-0.1.2-universal.zip`
-- `dist/Hermex-Mac-0.1.2-universal.dmg`
-- `dist/Hermex-Mac-0.1.2-universal-SHA256SUMS.txt`
+- `dist/Hermex-Mac-0.1.3-universal.zip`
+- `dist/Hermex-Mac-0.1.3-universal.dmg`
+- `dist/Hermex-Mac-0.1.3-universal-SHA256SUMS.txt`
 
-Real verification performed: `codesign --verify --deep --strict` passed; `lipo -archs` reported `x86_64 arm64`; `vtool -show-build` reported minimum OS 14.0 for both slices; `unzip -t` reported no errors; `hdiutil verify` reported a valid checksum. Neither Apple notarization nor an Intel runtime test is claimed. Test execution is Apple silicon on macOS 27.
+Earlier v0.1.2 packaging verification (not a claim of completed v0.1.3 packaging): `codesign --verify --deep --strict` passed; `lipo -archs` reported `x86_64 arm64`; `vtool -show-build` reported minimum OS 14.0 for both slices; `unzip -t` reported no errors; `hdiutil verify` reported a valid checksum. Neither Apple notarization nor an Intel runtime test is claimed. Test execution is Apple silicon on macOS 27.
 
 The parent handles commits, pushes, tag/version choice and Release publication. Building does not commit, push, publish, alter Git identity, restart services or touch production state. Rebuild after any code/version change; do not upload stale packages.
 

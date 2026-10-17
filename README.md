@@ -19,6 +19,17 @@ Native **SwiftUI + AppKit** macOS client for your self-hosted [hermes-webui](htt
 
 The app is **ad-hoc signed with hardened runtime**, not Developer ID signed or Apple-notarized. macOS can warn on first opening a downloaded build. Verify the release's SHA-256 and source before approving it. If you trust it, use macOS's per-app **Privacy & Security → Open Anyway** flow. Do not disable Gatekeeper globally or bypass TLS verification. Managed Macs may disallow ad-hoc applications.
 
+## Automatic app updates (0.1.3+)
+
+Sparkle checks the public GitHub Releases feed daily and automatically downloads
+and installs updates by default. Installation completes on quit; update restarts
+wait for busy work or active streams. Use **Hermex → Check for Updates…** or
+**Settings → App Updates**, available before connecting to a server. Both
+automatic settings can be changed there. Feeds and archives require Ed25519
+signatures, with archive verification before extraction. Older 0.1.2 installations
+need one manual upgrade. See [update security and release signing](macOS/AUTOMATIC_UPDATES.md),
+including the explicit ad-hoc library-validation decision required for packaging.
+
 ## Features
 
 - Native resizable sidebar/conversation layout, light/dark appearance, Settings window, standard menus and selectable text.
@@ -75,10 +86,11 @@ This is a useful **first native Mac release, not full iOS parity**.
 
 ## Build locally — no Xcode or Apple account
 
-Install Apple's Command Line Tools (`xcode-select --install`). Use Swift 6 with the macOS SDK and Swift Testing. No third-party Swift package downloads are required.
+Install Apple's Command Line Tools (`xcode-select --install`). Use Swift 6 with the macOS SDK and Swift Testing. The official Sparkle framework is downloaded from a versioned URL and SHA-256 verified; no Xcode package resolution is required.
 
 ```sh
-# Native release binary
+# Prepare the checksum-pinned Sparkle SDK, then build the native release binary
+python3 macOS/scripts/sparkle_sdk.py
 swift build -c release --build-system native
 
 # Tests, including a real temporary-Keychain round trip
@@ -87,11 +99,12 @@ bash macOS/scripts/test.sh
 # Actual app state + auth/session/upload + interrupted SSE/replay, fixture only
 python3 macOS/Tests/run_smoke.py
 
-# Universal app, signature verification, ZIP, DMG, SHA256SUMS
-python3 macOS/scripts/build.py --version 0.1.2 --arch universal
+# Universal app: choose signing policy first; see macOS/AUTOMATIC_UPDATES.md
+python3 macOS/scripts/build.py --version 0.1.3 --arch universal \
+  --signing-identity 'Developer ID Application: YOUR IDENTITY'
 ```
 
-Artifacts are under `dist/`, ignored by Git. `--arch arm64` builds only Apple silicon. Version is supplied explicitly. Bundle display name: **Hermex for Mac**; identifier: `com.kenmercuslai.hermex-mac`.
+The packaging command fails closed for ad-hoc signing unless the maintainer explicitly accepts `--allow-adhoc-library-validation`; this relaxes that single Hardened Runtime protection for loading Sparkle. It never disables TLS, archive/feed signature validation or Gatekeeper. Artifacts are under `dist/`, ignored by Git. `--arch arm64` builds only Apple silicon. Version is supplied explicitly. Bundle display name: **Hermex for Mac**; identifier: `com.kenmercuslai.hermex-mac`.
 
 The explicit `--build-system native` avoids Xcode-only tools in SwiftPM's latest default backend. Swift 6.4 warns this option is deprecated, but it currently builds correctly with standalone CLT. `test.sh` supplies CLT's Swift Testing framework search path. [Development notes](macOS/DEVELOPMENT.md) cover architecture, fixture UI tests, boundaries and release verification.
 

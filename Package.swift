@@ -32,8 +32,13 @@ let package = Package(
     products: [.executable(name: "Hermex", targets: ["HermexMac"])],
     targets: [
         .executableTarget(name: "HermexMac", path: ".", exclude: excluded(), sources: sources,
-                          swiftSettings: [.enableUpcomingFeature("BareSlashRegexLiterals")]),
-        .testTarget(name: "HermexMacTests", dependencies: ["HermexMac"], path: "macOS/Tests", exclude: ["protocol_fixture.py", "run_smoke.py"])
+                          swiftSettings: [.enableUpcomingFeature("BareSlashRegexLiterals"),
+                                          .unsafeFlags(["-F", root.appendingPathComponent(".build/sparkle").path])],
+                          linkerSettings: [.unsafeFlags(["-F", root.appendingPathComponent(".build/sparkle").path,
+                                                         "-framework", "Sparkle", "-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks"])]),
+        .testTarget(name: "HermexMacTests", dependencies: ["HermexMac"], path: "macOS/Tests",
+                    exclude: ["protocol_fixture.py", "run_smoke.py", "test_updates.py", "update_install_smoke.py", "__pycache__"],
+                    swiftSettings: [.unsafeFlags(["-F", root.appendingPathComponent(".build/sparkle").path])])
     ],
     swiftLanguageModes: [.v5]
 )
