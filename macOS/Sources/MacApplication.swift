@@ -6,13 +6,21 @@ import AppKit
 typealias MacState<Value> = SwiftUI.State<Value>
 
 struct HermexApplication: App {
+    @NSApplicationDelegateAdaptor(HermexAppDelegate.self) private var appDelegate
     @StateObject private var store: MacStore
+    @StateObject private var updates: UpdateCoordinator
     init() {
         #if DEBUG
-        _store = StateObject(wrappedValue: MacStore(persistence: !CommandLine.arguments.contains("--isolated")))
+        let isolated = CommandLine.arguments.contains("--isolated")
+        let store = MacStore(persistence: !isolated)
         #else
-        _store = StateObject(wrappedValue: MacStore())
+        let isolated = false
+        let store = MacStore()
         #endif
+        _store = StateObject(wrappedValue: store)
+        let updates = UpdateCoordinator(store: store, start: !isolated)
+        _updates = StateObject(wrappedValue: updates)
+        appDelegate.updates = updates
         NSApplication.shared.setActivationPolicy(.regular)
     }
     var body: some Scene {
@@ -21,6 +29,7 @@ struct HermexApplication: App {
                 .tint(Color(red: 0.62, green: 0.40, blue: 0.16))
         }.defaultSize(width: 1180, height: 800)
         .commands {
+            CommandGroup(after: .appInfo) { CheckForAppUpdates(settings: updates.settings) }
             CommandGroup(replacing: .newItem) {
                 Button("New Session") { Task { await store.newSession() } }.keyboardShortcut("n").disabled(!store.connected || store.busy)
             }
@@ -30,7 +39,15 @@ struct HermexApplication: App {
                 Button("Stop Response") { Task { await store.stop() } }.disabled(store.streamID == nil)
             }
         }
-        Settings { ScrollView { ConnectionSettings(store: store).padding(24) }.frame(width: 550, height: 600) }
+        Settings {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 24) {
+                    UpdateSettingsView(coordinator: updates)
+                    Divider()
+                    ConnectionSettings(store: store)
+                }.padding(24)
+            }.frame(width: 550, height: 700)
+        }
     }
 }
 
