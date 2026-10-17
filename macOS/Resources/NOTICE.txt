@@ -1,0 +1,21 @@
+Hermex for Mac
+
+Community macOS port of https://github.com/uzairansaruzi/hermex
+Original Hermex copyright Uzair Ansar and contributors, MIT License (LICENSE.txt).
+macOS port maintained in https://github.com/KenMercusLai/hermex-mac
+
+The macOS target directly compiles the original platform-independent APIClient,
+Endpoint definitions, models, multipart builder, catalog and usage policies from
+HermesMobile. The SSE event decoder is extracted unchanged in UpstreamSSE.swift;
+only the EventSource transport is replaced with Apple URLSession streaming.
+UpstreamAdapters.swift retains small webui memory/bounded-download excerpts.
+The app icon is the original Hermex light app icon, used from the MIT source tree.
+The original iOS source, license, and Git history are retained.
+
+No third-party Swift packages are linked into the macOS binary. SwiftUI, AppKit,
+Foundation, Security, ImageIO and Charts are Apple frameworks. No hosted backend,
+analytics SDK, agent runtime, model weights, push relay or credentials are bundled.
+
+This community build is ad-hoc signed with hardened runtime. It is not signed by
+Apple Developer ID, notarized, or distributed through the Mac App Store. macOS may
+require explicit approval before opening a downloaded community build.

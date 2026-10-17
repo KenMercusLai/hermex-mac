@@ -1,0 +1,113 @@
+# Native macOS development
+
+The Mac target is independent of the iOS Xcode project. Do not apply iOS simulator/App Store signing instructions to it. There are no network dependencies in `Package.swift`; it compiles selected original portable Swift files in place and keeps the entire iOS project untouched.
+
+## Architecture
+
+- **`MacStore`**: main-actor app state, server/session-scoped drafts, session actions, pending user requests, upload/send/reconnect/stop coordination. Send and reattach are separate paths; reattach cannot call chat start.
+- **`APIClient` + `Endpoint`**: original upstream actor, HTTP error handling, cross-origin redirect guard, cookie-auth requests and wire request bodies. Private ephemeral URLSessions are supplied by the Mac store rather than the upstream shared cookie jar.
+- **`MacKeychain` / `ConnectionRegistry`**: Security.framework generic-password items in the default macOS scope, service `com.kenmercuslai.hermex-mac`. Password accounts are keyed by the validated server URL. Saved server addresses/last connection use a separate `connections` item. No plaintext credential/connection file, bundled password, shared iOS access group or Apple team is required. Unlock/cancellation/storage failures are visible.
+- **`UpstreamSSE`**: unchanged event types/decoder/payload models extracted from upstream `SSEClient.swift`. LDSwiftEventSource is not linked.
+- **`MacStream`**: Foundation AsyncBytes transport, SSE blank-line framing, normal TLS validation, private auth session, cursor extraction, content-type/status checks and cancellation. It intentionally parses bytes rather than using `AsyncBytes.lines`, which omitted the empty frame boundaries during the real fixture test on this SDK.
+- **`RunProjection`**: replay-cursor de-duplication, text/reasoning/tool/request projection. `done` is not treated as socket end; `stream_end`, cancel and errors are terminal.
+- **`MacComposer`**: native NSTextView and a tested marked-text send gate. No send through an active IME composition.
+- **`NativeMarkdown`**: selectable native attributed inline Markdown, simple headings and fenced-code blocks with copying. No webview or remote HTML execution. Rich tables/math/media are not claimed.
+- **`MacApplication`, `ConversationView`, `ServerPanels`**: native views. Workspace/skills/memory/tasks/insights are read-only; destructive session deletion always uses a confirmation UI.
+
+Small webui memory and bounded-download excerpts are retained in `UpstreamAdapters.swift` because their upstream files also depend on the unlinked direct-Hermes stack. `Package.swift` explicitly allowlists sources and excludes all unrelated upstream subtrees/resources, avoiding Xcode-only asset and string-catalog compilers.
+
+### Swift 6.4 CLT notes
+
+The current standalone toolchain has SwiftUI/AppKit and Swift Testing, but no XCTest or full Xcode. `test.sh` uses `swift test --disable-xctest` with the framework path returned from `xcode-select -p`.
+
+The SDK also exports a new `State` macro whose Xcode-only macro plugin is absent in standalone CLT. `MacState<Value>` aliases the established `SwiftUI.State<Value>` property-wrapper type, avoiding macro-name lookup without replacing its runtime behavior. Both release architectures compile with this route.
+
+Use `--build-system native` to avoid the new SwiftPM default backend's Xcode-only resource tools. Swift 6.4 emits a deprecation warning for this option; that warning is a toolchain limitation, not a test failure. Build/test subprocesses use a minimal environment so tool failures cannot dump inherited host credentials.
+
+## Automated checks
+
+```sh
+bash macOS/scripts/test.sh
+python3 macOS/Tests/run_smoke.py
+```
+
+Verified results for this implementation:
+
+- **25 Swift Testing tests passed**, including server URL validation, real temporary-Keychain write/read/delete/isolation, Keychain-backed server registry, connection/session/history creation, per-server/session draft isolation, returning from a server panel to the selected conversation, SSE multiline framing, replay de-duplication/terminal policy, IME send policy and code-fence preservation. The 17 ownership regressions in `OwnershipTests.swift` use deterministic delayed URLProtocol responses, not timing sleeps. Each regression was observed RED before its corresponding fix, then GREEN.
+- **Headless fixture smoke passed** using the actual app store and original networking: password login/auth verification, model/provider/profile/workspace catalog decoding, create/rename/pin/archive/restore/update/search, real multipart upload, a deliberately interrupted real HTTP SSE connection, replay without a second chat start, authoritative history readback, workspace text read, skills/content, memory, cron list/output, insights, delete and logout. The runner asserts exactly **one** chat start, one upload was exercised and the fixture session was removed. It also checks a new-session profile cannot leak into an existing conversation's send.
+- The temporary Keychain tests use random service names and clean up their own items. They do not read production passwords.
+
+The Python server is an **explicit protocol fixture**, not a bundled runtime, live Hermes agent or substitute for production verification. Payload shapes are derived from upstream contracts and the read-only webui source reference. No real model is called and no production session is modified. Authentication/streaming against a user's live authenticated server remain a separate acceptance check.
+
+### Async ownership regressions
+
+Connection attempts freeze the validated address for credentials and the saved-server registry; the connection form disables editing while busy. Disconnect invalidates the connection/selection generations and releases busy state. Older completions, errors and deferred busy cleanup cannot publish into a newer connection.
+
+Selection-sensitive operations capture client, connection address/generation, session ID and selection generation before awaiting. Settings, mutations, create/history/upload/send, reattach, Stop and approval/clarification paths reject stale results. Stream attachment receives that captured owner explicitly, rather than reading a newly selected session after a status response. Server catalog lists use connection ownership, while catalog defaults also require selection ownership. Logout forgets only the captured connection's credentials.
+
+`OwnershipTests.swift` gates individual URLProtocol responses with continuations: wait for A's request, finish selecting/connecting B, then release A. It asserts B's history, draft, attachments, settings, run projection, Stop destination and actual send request remain B-owned. Keychain cases exercise remember/forget with random test services only. Logout/catalog and stale-send cleanup tests use an independently injected test transport so disconnect cancellation cannot mask a late-response bug. Delayed malformed JSON also proves obsolete failures cannot replace the current error.
+
+| Review seam | Regression coverage | Observed result |
+| --- | --- | --- |
+| Address/authentication ownership | `connectionCredentialsStayBoundToValidatedAddress`, `disconnectedAuthenticationCannotPublishOrBlockNextConnection` | RED → GREEN |
+| Session settings and mutation readback | `delayedSessionSettingsCannotRetargetAnotherDraft`, `delayedMutationReadbackCannotRetargetAnotherDraft` | RED → GREEN |
+| Reattach status/history | `delayedReattachStatusCannotAttachToAnotherSelection`, `delayedReattachStreamStatusCannotClearAnotherRun`, `delayedReattachHistoryCannotInstallAnotherSession` | RED → GREEN |
+| Related connection/selection paths | delayed Stop/history, new session, logout, each catalog stage, input responses/pending probes, failures and busy cleanup | RED → GREEN |
+
+## Independent native UI verification
+
+Start the explicitly labeled fixture in a foreground terminal:
+
+```sh
+python3 macOS/Tests/protocol_fixture.py --port 18787
+```
+
+Open `dist/Hermex.app`, enter `http://127.0.0.1:18787`, and use the public **fixture-only** password displayed by that server (`hermex-fixture-only`). This credential is not a production secret. The release app has no auto-login, fixture content or auth bypass.
+
+For isolated UI testing without persistent connection/Keychain changes, run the Debug executable after tests:
+
+```sh
+./.build/debug/Hermex --isolated
+```
+
+`--isolated` and `--protocol-smoke` exist only inside `#if DEBUG`. Isolation disables persistence, not authentication. The headless smoke accepts only loopback servers and requires an explicit fixture marker from `/health` **before** any login/mutation. It refuses a real server, including the normal local service.
+
+Manual acceptance checklist (parent/release maintainer owns screenshots):
+
+1. Invalid URL/wrong password/offline endpoint show errors; correct fixture login shows the native sidebar.
+2. Open seeded conversation; select/copy Markdown/code; resize columns, switch light/dark, test Settings and ⌘N/⌘R.
+3. New session; send with Return and ⌘Return; Shift-Return inserts a newline. With Chinese/Japanese IME, Return commits composition without sending.
+4. Attach a small file and image through the paperclip importer. Send, observe reasoning/tools/response, try Stop; disconnect and reattach without duplicated user turns.
+5. Right-click rename/pin/archive; show archived and restore. Delete dialog Cancel does nothing; confirm deletes only the chosen fixture session.
+6. Open Workspace and text preview; Skills/content; Memory; Tasks/recent output; Insights. These routes must remain reads.
+7. Switch servers/conversations with identical IDs; draft/auth/history must not cross scopes. Quit/relaunch: URL/password persistence works; drafts are intentionally memory-only.
+8. Sign Out removes the selected server's saved password and clears displayed data. Disconnect alone must not stop server execution.
+
+The implementation subagent did not launch a competing GUI session; independent packaged-app UI verification is delegated to the parent as requested.
+
+## Packaging and release
+
+```sh
+python3 macOS/scripts/build.py --version 0.1.0 --arch universal
+```
+
+This builds arm64 and cross-compiles x86_64 with a macOS 14 deployment target, combines them with `lipo`, generates `.icns` from upstream's light icon, embeds version/license/notices, ad-hoc signs with hardened runtime, verifies the signature, makes a `ditto` ZIP, creates/verifies a compressed DMG with an Applications symlink, and writes SHA-256 sums. `--arch arm64` omits the Intel slice. `--skip-dmg` is available if disk-image creation is unavailable. No GitHub Actions or Apple account is required.
+
+Expected paths:
+
+- `dist/Hermex.app`
+- `dist/Hermex-Mac-0.1.0-universal.zip`
+- `dist/Hermex-Mac-0.1.0-universal.dmg`
+- `dist/Hermex-Mac-0.1.0-universal-SHA256SUMS.txt`
+
+Real verification performed: `codesign --verify --deep --strict` passed; `lipo -archs` reported `x86_64 arm64`; `vtool -show-build` reported minimum OS 14.0 for both slices; `unzip -t` reported no errors; `hdiutil verify` reported a valid checksum. Neither Apple notarization nor an Intel runtime test is claimed. Test execution is Apple silicon on macOS 27.
+
+The parent handles commits, pushes, tag/version choice and Release publication. Building does not commit, push, publish, alter Git identity, restart services or touch production state. Rebuild after any code/version change; do not upload stale packages.
+
+## Security and compatibility boundaries
+
+Normal Foundation TLS trust validation is retained. The bundle permits explicitly configured HTTP endpoints for self-hosted/private-network compatibility; this is not a certificate-trust bypass. Remote HTTP login displays a warning. Prefer HTTPS. No untrusted remote HTML is loaded, no shell/tool code is executed locally, and server paths are not treated as local file URLs.
+
+Saved credentials and addresses are Keychain-only. Cookies/drafts/transcripts are in memory. Generic-password Keychain access on an ad-hoc app can prompt again after an app update because its signature changes; do not solve this by making passwords world-readable or adding shared iOS access-group entitlements.
+
+Contract provenance: original Hermex sources retained from the fork point; live webui checkout `641878bd88f91950ce9774af1ccf1372ba08ad19` was a read-only source reference. Existing upstream compatibility-pin files continue to describe the iOS project; they are not silently advanced by this Mac fork. APIs can drift and optional panels may be unavailable. See README for the explicit unported feature list.

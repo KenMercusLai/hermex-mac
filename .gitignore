@@ -16,6 +16,7 @@ Package.resolved
 
 # macOS
 .DS_Store
+/dist/
 
 # Local secrets
 .env

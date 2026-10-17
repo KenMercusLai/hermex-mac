@@ -1,164 +1,84 @@
-<div align="center">
+# Hermex for Mac
 
-<img src="docs/assets/readme/hermex-icon.png" alt="Hermex app icon" width="96" />
+Native **SwiftUI + AppKit** macOS client for your self-hosted [hermes-webui](https://github.com/nesquena/hermes-webui) server. This community fork ports [uzairansaruzi/hermex](https://github.com/uzairansaruzi/hermex) to the desktop. It is not a webview wrapper and does not bundle an agent or model runtime.
 
-# Hermex
+**macOS 14+ · Universal (Apple silicon + Intel) · MIT**
 
-**Control your self-hosted [Hermes](https://github.com/nesquena/hermes-webui) agent from your iPhone.**
+[Releases / 下载](https://github.com/KenMercusLai/hermex-mac/releases) · [Development and testing](macOS/DEVELOPMENT.md) · [Original iPhone README](macOS/UPSTREAM_README.md)
 
-Your server. Your iPhone. No middleman.
+## 安装 / Install
 
-[![iOS 18+](https://img.shields.io/badge/iOS-18%2B-000000?logo=apple&logoColor=white)](https://apps.apple.com/app/hermex/id6767006319)
-[![Swift](https://img.shields.io/badge/Swift-5.9%2B-F05138?logo=swift&logoColor=white)](https://swift.org)
-[![License: MIT](https://img.shields.io/badge/License-MIT-brightgreen.svg)](LICENSE)
-[![Follow on X](https://img.shields.io/badge/Follow-%40uzairansar-000000?logo=x&logoColor=white)](https://x.com/uzairansar)
-[![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-support-FFDD00?logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/callmeuzi)
+1. Download `Hermex-Mac-<version>-universal.dmg` from Releases; ZIP is also available.
+2. Open the disk image and drag **Hermex.app** to **Applications**.
+3. Open Hermex and enter your existing **hermes-webui** URL, e.g. `http://127.0.0.1:8787`, and its password. For remote access, prefer HTTPS or a trusted private network.
+4. **Remember password in macOS Keychain** enables reconnect without re-entering it. The last URL is remembered; reconnect is deliberate, not an automatic background sign-in.
 
-<a href="https://apps.apple.com/app/hermex/id6767006319">
-  <img src="https://toolbox.marketingtools.apple.com/api/v2/badges/download-on-the-app-store/black/en-us" alt="Download on the App Store" height="50" />
-</a>
+这是独立的 Mac 客户端，不需要 Xcode、Apple 开发者账号或在 Mac 上安装 Hermes 服务端。连接你已有的 `hermes-webui` 即可。下载包同时包含 Apple silicon 与 Intel 架构；实际执行测试在 Apple silicon 上完成。
 
-[Website](https://hermexapp.com) · [App Store](https://apps.apple.com/app/hermex/id6767006319) · [Report a bug](https://github.com/uzairansaruzi/hermex/issues) · [Contributing](CONTRIBUTING.md)
+### Community signing
 
-<img src="docs/assets/readme/hero-devices.png" alt="Hermex running on two iPhones: a streaming chat session and the home screen with Tasks, Skills, Memory, Insights, and Sessions" width="720" />
-
-</div>
-
-Hermex is a native SwiftUI iPhone app for driving a self-hosted [hermes-webui](https://github.com/nesquena/hermes-webui) server — a mobile cockpit for an AI agent that lives on a machine **you** control. The phone is the control plane, not the compute plane: the agent, its tools, and your data stay on your own hardware.
-
-- **Free.** No subscriptions, no in-app purchases.
-- **Private.** No analytics, no tracking. The app talks only to your server. Push notifications are optional and off until you enable them: an open-source relay you can self-host forwards them, seeing device tokens, notification metadata (kind, source, thread and session ids, timestamps), and ciphertext. It never sees message text, server URLs, or credentials.
-- **Native.** Real SwiftUI, built for iOS 18+, not a web wrapper.
+The app is **ad-hoc signed with hardened runtime**, not Developer ID signed or Apple-notarized. macOS can warn on first opening a downloaded build. Verify the release's SHA-256 and source before approving it. If you trust it, use macOS's per-app **Privacy & Security → Open Anyway** flow. Do not disable Gatekeeper globally or bypass TLS verification. Managed Macs may disallow ad-hoc applications.
 
 ## Features
 
-- **Chat with your agent** — send messages with model, reasoning-effort, workspace, and profile options; attach files and images; watch responses stream in real time with thinking and tool-call detail.
-- **Steer or stop a run** mid-flight.
-- **Sessions** — browse, search, and resume every conversation on your server; cached sessions stay readable offline.
-- **Pick your models** — switch between any model or provider your server is configured for, with recents and favorites.
-- **Profiles & projects** — switch agent profiles and organize sessions into projects.
-- **Tasks** — view and edit your agent's scheduled cron jobs from your phone.
-- **Skills** — browse and search the agent's installed skills.
-- **Workspace browser** — explore your server's file system from the app.
-- **Memory & Insights** — read-only panels for agent memory and usage analytics.
+- Native resizable sidebar/conversation layout, light/dark appearance, Settings window, standard menus and selectable text.
+- Server health check and upstream password/cookie login; private in-memory cookie jars per connection; passwords in the default macOS Keychain; sign-out/password removal.
+- Saved server addresses and connection switching. Unsent text and attachment references are isolated per server/session **in app memory**.
+- Session list, server-side search (Return to search), create, rename, pin/unpin, archive/restore and confirmed permanent deletion. Right-click a session for actions. Enable **Archived** to find and restore archived sessions.
+- Conversation history with earlier-message loading, inline Markdown/headings/fenced code, message/code copying, reasoning and recorded/live tool details.
+- Real SSE streaming, **Stop**, visible disconnect errors and **Reattach** using the existing stream ID/journal cursor. Reattach never resends the prompt. **Refresh Run** discovers an active run after reopening a conversation.
+- Tool approval **Allow Once / Deny**, clarification choices and free-text answers. Pending requests are checked while a run is active; no automatic or permanent approval grants.
+- File/image attachments through the native paperclip file importer, up to 20 MB each, using the upstream multipart/attachment-marker contract.
+- Model/provider catalog menus plus editable custom IDs, session workspace selection/application and profile selection for new sessions. Open the conversation's sliders control.
+- Read-only server panels: session-scoped workspace file browser/text/image preview; skills/instruction content; memory/user/soul/project context; scheduled tasks/recent output; usage metrics/charts/model breakdown.
 
-<div align="center">
-<table>
-  <tr>
-    <td align="center"><img src="docs/assets/readme/screenshot-chat.png" alt="Streaming chat with code blocks and markdown tables" width="240" /><br /><sub><b>Stream responses in real time</b></sub></td>
-    <td align="center"><img src="docs/assets/readme/screenshot-tasks.png" alt="Tasks screen listing scheduled cron jobs" width="240" /><br /><sub><b>Manage scheduled tasks</b></sub></td>
-    <td align="center"><img src="docs/assets/readme/screenshot-skills.png" alt="Skills screen with searchable agent skills" width="240" /><br /><sub><b>Browse agent skills</b></sub></td>
-  </tr>
-</table>
+### Keyboard
 
-More screenshots at [hermexapp.com](https://hermexapp.com).
-</div>
+| Action | Shortcut |
+|---|---|
+| New session | ⌘N |
+| Refresh sessions | ⌘R |
+| Settings | ⌘, |
+| Send from message editor | Return or ⌘Return |
+| Newline | Shift-Return |
 
-## Getting started
+Return/⌘Return never sends while IME composition is active. Another turn cannot be sent while a run is active; stop it first.
 
-Hermex is a client only — it does not ship with, host, or provision a backend. You bring your own [hermes-webui](https://github.com/nesquena/hermes-webui) server (a third-party, MIT-licensed open-source project) running on a machine you control. Setup takes about 15 minutes:
+## Compatibility and limitations
 
-1. **Run the server.** Install and start `hermes-webui` on macOS, Linux, or Windows/WSL2 (Python 3.11+). Set `HERMES_WEBUI_PASSWORD`.
-2. **Make it reachable from your phone** (see options below).
-3. **Connect.** [Download Hermex](https://apps.apple.com/app/hermex/id6767006319), enter your server URL (e.g. `https://hermes.yourdomain.com`) and password, and you're in.
+This is a useful **first native Mac release, not full iOS parity**.
 
-**Running a Hermes host instead?** Hermex can also sign in to Hermes's own dashboard (`hermes dashboard`, port 9119). Onboarding's first step gives your agent a prompt that sets it up: username and password sign-in under `dashboard.basic_auth`, a persistent `dashboard.basic_auth.secret` so sign-ins survive a restart, and `dashboard.public_url` set to the address your phone uses, reached through one of the options below. Those examples use the Web UI's port 8787; substitute your dashboard's port (9119 by default) in addresses and forwarding commands. Hermes refuses to serve beyond `127.0.0.1` without that sign-in.
+- Targets **legacy hermes-webui**, not direct Hermes dashboard/Gateway/Bots. Passwordless servers work; passkeys, OIDC/SSO, proxy custom headers and browser multi-factor sign-in are not implemented.
+- Compiles the original `APIClient`, endpoints, tolerant models, multipart and catalog policies directly. Retains the original SSE event decoder; Apple URLSession replaces the third-party iOS EventSource transport. Original iOS source/history remain intact.
+- Contract reference: upstream Hermex plus read-only inspection of webui `641878bd88f91950ce9774af1ccf1372ba08ad19`. Automated integration uses an **explicit local protocol fixture**, not production transcripts or a live model. Authenticated production workflows were **not** exercised by the implementation task.
+- Files, memory, skills, tasks and insights are **read-only**. Task/memory/skill editing, Kanban, projects, Git mutations, session import/branch/compress/export controls, steering, voice/TTS, media playback, rich math/tables, app intents and server administration are not exposed in this Mac UI.
+- No iOS share extension, APNs relay, Live Activities, mobile app lock or App Store integration.
+- No disk transcript/offline cache. Loaded history remains visible on network interruption. Drafts do not survive quitting. Disconnecting/switching detaches the client, **not** the server's run. Reopen the session and choose **Refresh Run** to reattach. Reconnection is user-driven rather than an unbounded retry loop.
+- Unsupported routes show errors. Missing metrics show “Not reported”, not fabricated values. File permissions and all execution remain the server's security responsibility. Remote HTML is shown as text source, never executed.
+- Intel is cross-compiled, not runtime-tested. Execution tests were on Apple silicon, macOS 27, Swift 6.4 CLT; there is no claim of a macOS 14 hardware test.
 
-Self-hosting the server, securing it, and keeping it reachable are your responsibility.
+## Build locally — no Xcode or Apple account
 
-### Making the server reachable
+Install Apple's Command Line Tools (`xcode-select --install`). Use Swift 6 with the macOS SDK and Swift Testing. No third-party Swift package downloads are required.
 
-- **HTTPS via a tunnel or reverse proxy (recommended).** Expose the server through Cloudflare Tunnel or any reverse proxy that terminates real TLS at a hostname you own. Real HTTPS keeps iOS App Transport Security happy with no exceptions. On a publicly reachable hostname the password is your only app-level defense — set a strong one.
-- **Private HTTPS with Tailscale Serve.** Keep the server password-protected and bound to `127.0.0.1:8787`, inspect existing Serve/Funnel routes, then add `tailscale serve --bg 8787` only when HTTPS port 443 at the root path is free. Install Tailscale on the iPhone and connect with the exact `https://…ts.net` URL reported by `tailscale serve status`. Direct binding to `0.0.0.0` over plain HTTP remains a manual fallback, not the default.
-- **Another private network, such as NetBird.** Install its app on the iPhone, keep it connected, and use the server's name or IP on that network.
-- **Same Wi-Fi.** On a home network you trust, use the machine's local address and port, such as `http://192.168.1.5:8787`. The server must listen on that address rather than only `127.0.0.1`, which exposes it to every device on the network, so keep the password strong.
-- **Simulator-only local testing** can use `http://localhost:8787` when the server runs on the same Mac.
+```sh
+# Native release binary
+swift build -c release --build-system native
 
-### Troubleshooting the connection
+# Tests, including a real temporary-Keychain round trip
+bash macOS/scripts/test.sh
 
-If connection testing fails, check these first:
+# Actual app state + auth/session/upload + interrupted SSE/replay, fixture only
+python3 macOS/Tests/run_smoke.py
 
-1. The machine hosting `hermes-webui` is awake.
-2. `hermes-webui` is running and serving `/health` (`curl https://<your-server>/health`).
-3. The tunnel, reverse proxy, or Tailscale route is connected.
-4. The server URL and password are correct.
-
-## Building from source
-
-Prefer the [App Store build](https://apps.apple.com/app/hermex/id6767006319) unless you're developing. To build yourself you need Xcode 26 or newer (iOS 18 SDK) and an iPhone or simulator on iOS 18+.
-
-Clone the repo, open `HermesMobile.xcodeproj`, and run the `HermesMobile` scheme on an iPhone simulator (the Xcode target is `HermesMobile`; the app's display name is `Hermex`). Dependencies are resolved automatically via Swift Package Manager.
-
-From the command line:
-
-```zsh
-xcodebuild -project HermesMobile.xcodeproj -scheme HermesMobile -destination 'platform=iOS Simulator,name=iPhone 17' build
+# Universal app, signature verification, ZIP, DMG, SHA256SUMS
+python3 macOS/scripts/build.py --version 0.1.0 --arch universal
 ```
 
-```zsh
-xcodebuild test -project HermesMobile.xcodeproj -scheme HermesMobile -destination 'platform=iOS Simulator,name=iPhone 17'
-```
+Artifacts are under `dist/`, ignored by Git. `--arch arm64` builds only Apple silicon. Version is supplied explicitly. Bundle display name: **Hermex for Mac**; identifier: `com.kenmercuslai.hermex-mac`.
 
-If that simulator is not installed, list available devices and choose a nearby iPhone simulator:
+The explicit `--build-system native` avoids Xcode-only tools in SwiftPM's latest default backend. Swift 6.4 warns this option is deprecated, but it currently builds correctly with standalone CLT. `test.sh` supplies CLT's Swift Testing framework search path. [Development notes](macOS/DEVELOPMENT.md) cover architecture, fixture UI tests, boundaries and release verification.
 
-```zsh
-xcrun simctl list devices available
-```
+## Origin and license
 
-Local validation defaults for XcodeBuildMCP users live in `.xcodebuildmcp/config.yaml`; the standard post-change flow is in [`DEVELOPMENT.md`](DEVELOPMENT.md).
-
-## Server compatibility
-
-The app is developed and tested against the `hermes-webui` commit pinned in [`UPSTREAM_TESTED_SHA`](UPSTREAM_TESTED_SHA). Upstream does not yet guarantee API stability (its README declares version skew unsupported pending their stable-API work), so newer or older server versions may break individual features — please include your server version in bug reports. The app decodes tolerantly (unknown fields never crash it) and endpoint shapes are verified against upstream source, never invented.
-
-Bot Mode's direct-Hermes connection has its own pin, [`HERMES_AGENT_TESTED_SHA`](HERMES_AGENT_TESTED_SHA): line 1 is the tested `hermes-agent` commit and line 2 the release string its `/api/status` reports. Hermex refuses a host older than Hermes 0.21.3, the first release with the gateway contract it is built on, and asks you to update Hermes; 0.21.3 and later connect without a warning.
-
-## Documentation map
-
-- [`AGENTS.md`](AGENTS.md): the working agreement — product boundaries, server-contract rules, locked dependencies, verification, and PR flow.
-- [`DEVELOPMENT.md`](DEVELOPMENT.md): local development workflow, server setup notes, and the maintainer release runbook.
-- [`TESTFLIGHT.md`](TESTFLIGHT.md): maintainer-only TestFlight/App Store Connect operations.
-- [`SECURITY.md`](SECURITY.md): how to report a vulnerability.
-- [`docs/agents/`](docs/agents): repo-local agent workflow conventions (issues, triage labels, domain notes).
-- [GitHub Issues](https://github.com/uzairansaruzi/hermex/issues): source of truth for active bugs, polish notes, and feature requests.
-
-## Contributing
-
-Contributions are welcome — see [`CONTRIBUTING.md`](CONTRIBUTING.md) for how to pick up work and open a PR, [`AGENTS.md`](AGENTS.md) for the working agreement coding agents follow in this repo, and the [Code of Conduct](CODE_OF_CONDUCT.md). The short version:
-
-- Do not invent API endpoints or JSON shapes; verify against the upstream server source or a running server.
-- Every `Codable` model decodes tolerantly — never crash on unknown fields.
-- Add no third-party dependencies beyond the locked list in `AGENTS.md` without explicit approval.
-- Do not modify the upstream `hermes-webui` server from this repo.
-
-## Support the project
-
-Hermex is free and built in the open. If it's useful to you:
-
-- ⭐ **Star this repo** — it helps others find the project.
-- 🐦 **Follow [@uzairansar on X](https://x.com/uzairansar)** for updates and dev logs.
-- ☕ **[Buy me a coffee](https://buymeacoffee.com/callmeuzi)** to support development.
-- 💬 **[Join the Hermex Discord](https://discord.gg/xDQWBCG4DQ)** for help, updates, and to talk with other users.
-- 💛 **[Become a member](https://buymeacoffee.com/callmeuzi/membership)** for early TestFlight builds, the members-only Discord channels, and a vote on what gets built next.
-
-<a href="https://buymeacoffee.com/callmeuzi"><img src="https://img.shields.io/badge/Buy%20Me%20a%20Coffee-callmeuzi-FFDD00?style=for-the-badge&logo=buymeacoffee&logoColor=black" alt="Buy Me a Coffee" height="40" /></a>
-
-### Supporters
-
-Hermex is funded by its members. Thank you.
-
-**Patrons:** Robin Edwards
-
-**Members:** Aaron Kaufer
-
-**Founding members:** James Cross · Alexey
-
-<sub>Updated monthly from [Buy Me a Coffee](https://buymeacoffee.com/callmeuzi/membership). Members who join anonymously aren't listed. Email [uzairansar@gmail.com](mailto:uzairansar@gmail.com) to be added or removed.</sub>
-
-## License
-
-MIT — see [LICENSE](LICENSE).
-
-The file-type icons in the workspace tree are [Pierre](https://pierre.co)'s `@pierre/trees` icons (Apache-2.0) with six additions from [T3 Code](https://github.com/pingdotgg/t3code) (MIT).
-
-Hermex is an independent client and is not affiliated with the upstream [hermes-webui](https://github.com/nesquena/hermes-webui) project. Apple, the Apple logo, and App Store are trademarks of Apple Inc.
+Upstream Hermex is by **Uzair Ansar and contributors**, under the [MIT license](LICENSE). This is an independent macOS fork, not an official upstream Mac release. Original source/assets/notices/history are preserved. Portable code is compiled in place; new UI, Keychain, stream transport, tests and packaging are under `macOS/`. No upstream iOS Swift files were modified.
