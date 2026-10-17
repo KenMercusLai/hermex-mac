@@ -9,9 +9,11 @@ import json
 import threading
 import urllib.parse
 import uuid
+from typing import cast
 
 PASSWORD = 'hermex-fixture-only'
 COOKIE = 'hermes_session=fixture-only'
+FIXTURE_HEADERS = {'CF-Access-Client-Id': 'fixture-only-id', 'CF-Access-Client-Secret': 'fixture-only-secret', 'X-Fixture-Connection': 'fixture-only-generic'}
 
 class Fixture(http.server.BaseHTTPRequestHandler):
     protocol_version = 'HTTP/1.1'
@@ -21,6 +23,23 @@ class Fixture(http.server.BaseHTTPRequestHandler):
     uploaded = False
     last_body = {}
     fail_next_stream = False
+    require_headers = False
+    header_paths = []
+
+    def check_headers(self):
+        if not type(self).require_headers:
+            return True
+        if any(self.headers.get(name) != value for name, value in FIXTURE_HEADERS.items()):
+            data = b'<html>Cloudflare Access fixture: missing Service Token headers</html>'
+            self.send_response(403)
+            self.send_header('Server', 'cloudflare')
+            self.send_header('Content-Type', 'text/html')
+            self.send_header('Content-Length', str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return False
+        type(self).header_paths.append((self.command, urllib.parse.urlparse(self.path).path))
+        return True
 
     def log_message(self, *_):
         pass
@@ -39,6 +58,8 @@ class Fixture(http.server.BaseHTTPRequestHandler):
         return self.sessions.get(sid)
 
     def do_GET(self):
+        if not self.check_headers():
+            return
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
         qs = urllib.parse.parse_qs(parsed.query)
@@ -135,6 +156,8 @@ class Fixture(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         path = urllib.parse.urlparse(self.path).path
         data = self.rfile.read(int(self.headers.get('Content-Length', '0')))
+        if not self.check_headers():
+            return
         if path == '/api/auth/login':
             body = json.loads(data)
             if body.get('password') != PASSWORD:
@@ -145,6 +168,8 @@ class Fixture(http.server.BaseHTTPRequestHandler):
         if path == '/api/auth/logout':
             return self.reply({'ok': True}, headers={'Set-Cookie': 'hermes_session=; Path=/; Max-Age=0'})
         if path == '/api/upload':
+            if not self.headers.get('Content-Type', '').startswith('multipart/form-data; boundary='):
+                return self.reply({'error': 'Wrong multipart Content-Type'}, 400)
             if b'name="session_id"' not in data or b'name="file"' not in data:
                 return self.reply({'error': 'Wrong multipart fields'}, 400)
             type(self).uploaded = True
@@ -185,10 +210,70 @@ class Fixture(http.server.BaseHTTPRequestHandler):
             return self.reply({'error': 'Unsupported fixture mutation'}, 404)
         return self.reply({'ok': True, 'session': item})
 
-def start(port=0, seed=False):
+class RedirectServer(http.server.ThreadingHTTPServer):
+    events: list[dict]
+    other_origin: str
+
+
+class RedirectFixture(http.server.BaseHTTPRequestHandler):
+    """Two loopback origins exercise the real Foundation redirect delegate."""
+    protocol_version = 'HTTP/1.1'
+
+
+    def log_message(self, format, *args):
+        pass
+
+    def respond(self, data, content_type='application/json', status=200, location=None):
+        self.send_response(status)
+        self.send_header('Content-Type', content_type)
+        self.send_header('Content-Length', str(len(data)))
+        if location:
+            self.send_header('Location', location)
+        self.end_headers()
+        self.wfile.write(data)
+        self.wfile.flush()
+
+    def handle_request(self, body=b''):
+        server = cast(RedirectServer, self.server)
+        path = urllib.parse.urlparse(self.path).path
+        server.events.append({'path': path, 'method': self.command, 'headers': dict(self.headers), 'body': body})
+        if path == '/health':
+            return self.respond(b'{"fixture":"hermex-mac-redirect-v1"}')
+        if path.startswith('/same/') or path.startswith('/cross/'):
+            prefix, suffix = path[1:].split('/', 1)
+            origin = server.other_origin if prefix == 'cross' else ''
+            return self.respond(b'', status=307, location=origin + '/capture/' + suffix)
+        if path.endswith('/api/chat/stream'):
+            return self.respond(b'id: fixture:1\nevent: stream_end\ndata: {}\n\n', 'text/event-stream')
+        if path.endswith('/health'):
+            return self.respond(b'{"status":"ok"}')
+        if path.endswith('/api/auth/login'):
+            return self.respond(b'{"ok":true}')
+        return self.respond(b'fixture-only-media', 'application/octet-stream')
+
+    def do_GET(self):
+        self.handle_request()
+
+    def do_POST(self):
+        self.handle_request(self.rfile.read(int(self.headers.get('Content-Length', '0'))))
+
+
+def start_redirect_pair():
+    servers = [RedirectServer(('127.0.0.1', 0), RedirectFixture) for _ in range(2)]
+    for index, server in enumerate(servers):
+        server.events = []
+        server.other_origin = f'http://127.0.0.1:{servers[1 - index].server_port}'
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+    return servers
+
+
+def start(port=0, seed=False, require_headers=False):
     Fixture.sessions = {}
     Fixture.starts = 0
     Fixture.uploaded = False
+    Fixture.chat_profiles = []
+    Fixture.header_paths = []
+    Fixture.require_headers = require_headers
     if seed:
         Fixture.sessions['fixture-welcome'] = {'session_id': 'fixture-welcome', 'title': 'Welcome to the protocol fixture', 'workspace': '/fixture/workspace', 'model': 'fixture-model', 'model_provider': 'fixture', 'messages': [{'role': 'assistant', 'content': '# Native Hermex for Mac\n\nThis is an **explicit test fixture**, not a live Hermes agent.\n\n```swift\nprint("Hello, Mac")\n```'}], 'message_count': 1}
     server = http.server.ThreadingHTTPServer(('127.0.0.1', port), Fixture)
@@ -199,8 +284,9 @@ def start(port=0, seed=False):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--port', type=int, default=18787)
+    parser.add_argument('--require-headers', action='store_true', help='Require public fixture-only Service Token headers on every route')
     args = parser.parse_args()
-    server = start(args.port, seed=True)
+    server = start(args.port, seed=True, require_headers=args.require_headers)
     print(f'Explicit protocol fixture: http://127.0.0.1:{server.server_port}; password: {PASSWORD}', flush=True)
     try:
         threading.Event().wait()

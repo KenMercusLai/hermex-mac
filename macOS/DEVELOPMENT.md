@@ -7,6 +7,8 @@ The Mac target is independent of the iOS Xcode project. Do not apply iOS simulat
 - **`MacStore`**: main-actor app state, server/session-scoped drafts, session actions, pending user requests, upload/send/reconnect/stop coordination. Send and reattach are separate paths; reattach cannot call chat start.
 - **`APIClient` + `Endpoint`**: original upstream actor, HTTP error handling, cross-origin redirect guard, cookie-auth requests and wire request bodies. Private ephemeral URLSessions are supplied by the Mac store rather than the upstream shared cookie jar.
 - **`MacKeychain` / `ConnectionRegistry`**: Security.framework generic-password items in the default macOS scope, service `com.kenmercuslai.hermex-mac`. Password accounts are keyed by the validated server URL. Saved server addresses/last connection use a separate `connections` item. No plaintext credential/connection file, bundled password, shared iOS access group or Apple team is required. Unlock/cancellation/storage failures are visible.
+- **`ConnectionHeaders` / `ConnectionHeaderVault`**: original `CustomHeader` model and application policy, with strict Mac editor validation, case-insensitive last-nonblank duplicate policy, transport-managed field rejection and complete Cloudflare pair validation. Headers have a separate `connection-headers|<validated-url>` Keychain item, independent of remember-password. Source-owned editor drafts survive A→B→A in memory; URL changes restore only the destination's scope. No process-wide secret store is used.
+- **`ConnectionFailure`**: header-bearing pre-auth health probe, Cloudflare HTML/Access-login diagnostics distinct from JSON origin-permission refusals, response-body suppression and header-value redaction for displayed errors. A Cloudflare denial explains Service Token + Service Auth policy versus the separate WebUI password; no Access bypass or production policy change is performed.
 - **`UpstreamSSE`**: unchanged event types/decoder/payload models extracted from upstream `SSEClient.swift`. LDSwiftEventSource is not linked.
 - **`MacStream`**: Foundation AsyncBytes transport, SSE blank-line framing, normal TLS validation, private auth session, cursor extraction, content-type/status checks and cancellation. It intentionally parses bytes rather than using `AsyncBytes.lines`, which omitted the empty frame boundaries during the real fixture test on this SDK.
 - **`RunProjection`**: replay-cursor de-duplication, text/reasoning/tool/request projection. `done` is not treated as socket end; `stream_end`, cancel and errors are terminal.
@@ -33,15 +35,17 @@ python3 macOS/Tests/run_smoke.py
 
 Verified results for this implementation:
 
-- **25 Swift Testing tests passed**, including server URL validation, real temporary-Keychain write/read/delete/isolation, Keychain-backed server registry, connection/session/history creation, per-server/session draft isolation, returning from a server panel to the selected conversation, SSE multiline framing, replay de-duplication/terminal policy, IME send policy and code-fence preservation. The 17 ownership regressions in `OwnershipTests.swift` use deterministic delayed URLProtocol responses, not timing sleeps. Each regression was observed RED before its corresponding fix, then GREEN.
+- **35 Swift Testing tests passed**, retaining all 25 baseline tests and adding required-header health-before-auth, per-server header Keychain restoration/removal/password independence, arbitrary URL edits/paste/selection draft isolation, strict validation/injection/reserved/duplicate policies, Cloudflare-specific non-echoing errors, immutable delayed-connect headers, full origin comparison, case-insensitive redirect stripping, fail-closed credential POST redirects and local forgetting after a refused remote logout. The ownership regressions use deterministic delayed URLProtocol responses, not timing sleeps. The original 17 ownership fixes and new header-required connection/remote-logout regressions were observed RED→GREEN; additional policy/security tests cover their boundaries.
 - **Headless fixture smoke passed** using the actual app store and original networking: password login/auth verification, model/provider/profile/workspace catalog decoding, create/rename/pin/archive/restore/update/search, real multipart upload, a deliberately interrupted real HTTP SSE connection, replay without a second chat start, authoritative history readback, workspace text read, skills/content, memory, cron list/output, insights, delete and logout. The runner asserts exactly **one** chat start, one upload was exercised and the fixture session was removed. It also checks a new-session profile cannot leak into an existing conversation's send.
 - The temporary Keychain tests use random service names and clean up their own items. They do not read production passwords.
+- **Required-header fixture smoke passed**: an optional fake Service Token + generic-header gate protects every route, including `/health` and initial/replay SSE. The actual app connection-configuration/store path persists headers to an isolated random-service Keychain, recreates the store to restore them with remember-password disabled, then runs auth/catalog/session/upload/interrupted-SSE/replay/file-preview/panels/Stop/approval/clarification/logout. Initial and replay SSE both pass the gate, exactly one chat start occurs, and logout removes the headers. The fixture rejects missing headers before exposing its marker. This path was observed failing before header-aware smoke support, then passing.
+- **Two-origin real HTTP redirect smoke passed**: separate loopback servers receive actual Foundation JSON, bounded-download, media and native SSE requests. Same-origin redirects preserve headers; second-origin redirects and directly requested external media receive none. A 307 password POST never reaches the second origin. Built-in JSON/SSE Accept and JSON/multipart Content-Type take precedence. Unit tests additionally cover scheme/host/effective-port comparison and mixed-case field removal. The existing upstream redirect delegate is unchanged; its live-edit race is avoided by immutable per-connection providers.
 
 The Python server is an **explicit protocol fixture**, not a bundled runtime, live Hermes agent or substitute for production verification. Payload shapes are derived from upstream contracts and the read-only webui source reference. No real model is called and no production session is modified. Authentication/streaming against a user's live authenticated server remain a separate acceptance check.
 
 ### Async ownership regressions
 
-Connection attempts freeze the validated address for credentials and the saved-server registry; the connection form disables editing while busy. Disconnect invalidates the connection/selection generations and releases busy state. Older completions, errors and deferred busy cleanup cannot publish into a newer connection.
+Connection attempts freeze the validated address and header snapshot for credentials and the saved-server registry; the connection form disables editing while busy. Both APIClient's provider/redirect guard and MacStream's initial/replay requests use that same captured snapshot. Later editor changes never change an active client. Disconnect invalidates the connection/selection generations and releases busy state. Older completions, errors and deferred busy cleanup cannot publish into a newer connection. Explicit sign-out forgets only the owned connection's password/header items, even if remote logout fails; failure to confirm remote logout is reported, not silently treated as server-side revocation.
 
 Selection-sensitive operations capture client, connection address/generation, session ID and selection generation before awaiting. Settings, mutations, create/history/upload/send, reattach, Stop and approval/clarification paths reject stale results. Stream attachment receives that captured owner explicitly, rather than reading a newly selected session after a status response. Server catalog lists use connection ownership, while catalog defaults also require selection ownership. Logout forgets only the captured connection's credentials.
 
@@ -70,7 +74,7 @@ For isolated UI testing without persistent connection/Keychain changes, run the 
 ./.build/debug/Hermex --isolated
 ```
 
-`--isolated` and `--protocol-smoke` exist only inside `#if DEBUG`. Isolation disables persistence, not authentication. The headless smoke accepts only loopback servers and requires an explicit fixture marker from `/health` **before** any login/mutation. It refuses a real server, including the normal local service.
+`--isolated`, `--protocol-smoke`, `--protocol-smoke-headers` and `--header-redirect-smoke` exist only inside `#if DEBUG`. Isolation disables persistence, not authentication. The headless smoke accepts only loopback servers and requires an explicit fixture marker from `/health` **before** any login/mutation. In required-header mode the public fixture-only headers are applied before that marker probe; real credentials are never read. It refuses a real server, including the normal local service. `run_smoke.py` runs both compatibility modes plus the two-origin redirect check. For manual header-mode fixture testing use `protocol_fixture.py --require-headers`; the obviously fake constants are in that fixture's source, not a real Cloudflare account.
 
 Manual acceptance checklist (parent/release maintainer owns screenshots):
 
@@ -81,14 +85,14 @@ Manual acceptance checklist (parent/release maintainer owns screenshots):
 5. Right-click rename/pin/archive; show archived and restore. Delete dialog Cancel does nothing; confirm deletes only the chosen fixture session.
 6. Open Workspace and text preview; Skills/content; Memory; Tasks/recent output; Insights. These routes must remain reads.
 7. Switch servers/conversations with identical IDs; draft/auth/history must not cross scopes. Quit/relaunch: URL/password persistence works; drafts are intentionally memory-only.
-8. Sign Out removes the selected server's saved password and clears displayed data. Disconnect alone must not stop server execution.
+8. Expand Connection Headers in welcome and disconnected Settings; add/remove generic rows and restore the Cloudflare pair. At 920×620 and in Settings, scroll to all fields/actions. Switch A→B→A by typing/paste/Saved servers; values must remain source-owned. Sign Out removes only the selected server's saved password/headers and clears displayed data. Dedicated Clear forgets headers independently of password. Disconnect alone must not stop server execution.
 
 The implementation subagent did not launch a competing GUI session; independent packaged-app UI verification is delegated to the parent as requested.
 
 ## Packaging and release
 
 ```sh
-python3 macOS/scripts/build.py --version 0.1.0 --arch universal
+python3 macOS/scripts/build.py --version 0.1.1 --arch universal
 ```
 
 This builds arm64 and cross-compiles x86_64 with a macOS 14 deployment target, combines them with `lipo`, generates `.icns` from upstream's light icon, embeds version/license/notices, ad-hoc signs with hardened runtime, verifies the signature, makes a `ditto` ZIP, creates/verifies a compressed DMG with an Applications symlink, and writes SHA-256 sums. `--arch arm64` omits the Intel slice. `--skip-dmg` is available if disk-image creation is unavailable. No GitHub Actions or Apple account is required.
@@ -96,9 +100,9 @@ This builds arm64 and cross-compiles x86_64 with a macOS 14 deployment target, c
 Expected paths:
 
 - `dist/Hermex.app`
-- `dist/Hermex-Mac-0.1.0-universal.zip`
-- `dist/Hermex-Mac-0.1.0-universal.dmg`
-- `dist/Hermex-Mac-0.1.0-universal-SHA256SUMS.txt`
+- `dist/Hermex-Mac-0.1.1-universal.zip`
+- `dist/Hermex-Mac-0.1.1-universal.dmg`
+- `dist/Hermex-Mac-0.1.1-universal-SHA256SUMS.txt`
 
 Real verification performed: `codesign --verify --deep --strict` passed; `lipo -archs` reported `x86_64 arm64`; `vtool -show-build` reported minimum OS 14.0 for both slices; `unzip -t` reported no errors; `hdiutil verify` reported a valid checksum. Neither Apple notarization nor an Intel runtime test is claimed. Test execution is Apple silicon on macOS 27.
 

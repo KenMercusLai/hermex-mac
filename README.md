@@ -23,6 +23,7 @@ The app is **ad-hoc signed with hardened runtime**, not Developer ID signed or A
 
 - Native resizable sidebar/conversation layout, light/dark appearance, Settings window, standard menus and selectable text.
 - Server health check and upstream password/cookie login; private in-memory cookie jars per connection; passwords in the default macOS Keychain; sign-out/password removal.
+- Pre-connect **Connection Headers** in the welcome screen and Settings: Cloudflare Access Service Token pair, generic Add/Remove Header rows and secure values; separate per-server Keychain storage.
 - Saved server addresses and connection switching. Unsent text and attachment references are isolated per server/session **in app memory**.
 - Session list, server-side search (Return to search), create, rename, pin/unpin, archive/restore and confirmed permanent deletion. Right-click a session for actions. Enable **Archived** to find and restore archived sessions.
 - Conversation history with earlier-message loading, inline Markdown/headings/fenced code, message/code copying, reasoning and recorded/live tool details.
@@ -44,11 +45,25 @@ The app is **ad-hoc signed with hardened runtime**, not Developer ID signed or A
 
 Return/⌘Return never sends while IME composition is active. Another turn cannot be sent while a run is active; stop it first.
 
+## Cloudflare Access / authenticated reverse proxies
+
+Cloudflare Access and the WebUI password are **two independent authentication layers**. An Access-protected `/health` must first accept your authorized Service Token; Hermex then performs the existing WebUI password/cookie login if enabled. The WebUI password does not satisfy Cloudflare Access.
+
+1. Obtain a Service Token authorized for your Access application from its administrator. The application's Access policy must use the **Service Auth** action and include that token. An email/identity-provider login policy alone is not sufficient for a native service-token client. See [Cloudflare's official Service Token documentation](https://developers.cloudflare.com/cloudflare-one/access-controls/service-credentials/service-tokens/). This app does not create tokens or change Access policies.
+2. Enter the exact HTTPS server URL, then fill both **CF-Access-Client-Id** and **CF-Access-Client-Secret** in **Connection Headers**. The two empty rows are supplied by default; **Add Cloudflare Pair** restores missing rows without overwriting values. No specific token format is assumed. Values are secure fields, with surrounding whitespace trimmed according to upstream policy.
+3. Enter the separate **Webui password** if your server requires one and choose **Connect**. Generic authenticated proxies can use **Add Header**, for example an administrator-provided `X-Api-Key` or `Authorization` header.
+
+Blank values are ignored, including the default empty Cloudflare pair. A partial pair is rejected with guidance. Header names must be valid HTTP tokens; control characters in names/values and transport-managed fields such as `Host`, `Cookie` and `Content-Length` are rejected. Duplicate names are case-insensitive and the last nonblank row wins. Built-in `Accept` / `Content-Type` values take precedence where those requests require them.
+
+Nonblank headers are saved in **macOS Keychain for that exact validated server URL** when connecting, independently of **Remember password**. Selecting a saved server or re-entering its URL restores its own headers; editing/pasting another address never copies credentials to it. In-progress header drafts stay source-owned in memory, and each connection captures an immutable snapshot for health, login, API, uploads, media, SSE and replay. Disconnect before editing active connection headers. **Clear & Forget Saved Headers** removes that server's saved/editor headers without deleting its WebUI password. **Sign Out & Forget Credentials** removes both; if server logout cannot be confirmed, local credentials are still forgotten and a warning is shown. Disconnect alone preserves saved credentials.
+
+Same-origin redirects retain headers. Cross-origin GET/media/SSE redirects strip configured custom headers, and cross-origin credential-bearing POST redirects are refused. No headers are attached to directly requested third-party media. Use HTTPS: HTTP exposes headers as well as passwords/data. Never post token values in bug reports, screenshots or logs. Browser email/SSO/MFA login is not implemented; use an administrator-authorized Service Token rather than disabling Access.
+
 ## Compatibility and limitations
 
 This is a useful **first native Mac release, not full iOS parity**.
 
-- Targets **legacy hermes-webui**, not direct Hermes dashboard/Gateway/Bots. Passwordless servers work; passkeys, OIDC/SSO, proxy custom headers and browser multi-factor sign-in are not implemented.
+- Targets **legacy hermes-webui**, not direct Hermes dashboard/Gateway/Bots. Passwordless servers and authorized proxy custom headers / Cloudflare Service Tokens work; passkeys, browser OIDC/SSO and browser multi-factor sign-in are not implemented.
 - Compiles the original `APIClient`, endpoints, tolerant models, multipart and catalog policies directly. Retains the original SSE event decoder; Apple URLSession replaces the third-party iOS EventSource transport. Original iOS source/history remain intact.
 - Contract reference: upstream Hermex plus read-only inspection of webui `641878bd88f91950ce9774af1ccf1372ba08ad19`. Automated integration uses an **explicit local protocol fixture**, not production transcripts or a live model. Authenticated production workflows were **not** exercised by the implementation task.
 - Files, memory, skills, tasks and insights are **read-only**. Task/memory/skill editing, Kanban, projects, Git mutations, session import/branch/compress/export controls, steering, voice/TTS, media playback, rich math/tables, app intents and server administration are not exposed in this Mac UI.
@@ -72,7 +87,7 @@ bash macOS/scripts/test.sh
 python3 macOS/Tests/run_smoke.py
 
 # Universal app, signature verification, ZIP, DMG, SHA256SUMS
-python3 macOS/scripts/build.py --version 0.1.0 --arch universal
+python3 macOS/scripts/build.py --version 0.1.1 --arch universal
 ```
 
 Artifacts are under `dist/`, ignored by Git. `--arch arm64` builds only Apple silicon. Version is supplied explicitly. Bundle display name: **Hermex for Mac**; identifier: `com.kenmercuslai.hermex-mac`.

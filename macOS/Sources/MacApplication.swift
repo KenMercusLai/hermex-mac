@@ -30,7 +30,7 @@ struct HermexApplication: App {
                 Button("Stop Response") { Task { await store.stop() } }.disabled(store.streamID == nil)
             }
         }
-        Settings { ConnectionSettings(store: store).padding(24).frame(width: 550) }
+        Settings { ScrollView { ConnectionSettings(store: store).padding(24) }.frame(width: 550, height: 600) }
     }
 }
 
@@ -68,7 +68,7 @@ struct ErrorBanner: View {
 struct WelcomeView: View {
     @ObservedObject var store: MacStore
     var body: some View {
-        HStack(spacing: 60) {
+        HStack(spacing: 32) {
             VStack(alignment: .leading, spacing: 24) {
                 Image(systemName: "sparkles.rectangle.stack").font(.system(size: 52, weight: .light)).foregroundStyle(.brown)
                 VStack(alignment: .leading, spacing: 8) {
@@ -77,13 +77,15 @@ struct WelcomeView: View {
                 }
                 Text("Conversations, tools, and your workspace —\nconnected directly to your own Hermes server.").font(.title3).foregroundStyle(.secondary).lineSpacing(4)
                 Label("Private by design. No hosted backend.", systemImage: "lock.shield").font(.callout).foregroundStyle(.secondary)
-            }.frame(maxWidth: 410, alignment: .leading)
-            VStack(alignment: .leading, spacing: 18) {
+            }.frame(maxWidth: 340, alignment: .leading)
+            ScrollView {
+              VStack(alignment: .leading, spacing: 18) {
                 Text("Connect to Hermes").font(.title2.bold())
                 Text("Use your existing hermes-webui address.\nThe agent stays on your server.").foregroundStyle(.secondary)
                 ConnectionForm(store: store)
-            }.padding(28).frame(width: 410).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18)).overlay(RoundedRectangle(cornerRadius: 18).strokeBorder(.quaternary))
-        }.padding(48).frame(maxWidth: .infinity, maxHeight: .infinity)
+              }.padding(24)
+            }.frame(width: 420).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18)).overlay(RoundedRectangle(cornerRadius: 18).strokeBorder(.quaternary))
+        }.padding(32).frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(LinearGradient(colors: [Color(nsColor: .windowBackgroundColor), Color.brown.opacity(0.065)], startPoint: .topLeading, endPoint: .bottomTrailing))
     }
 }
@@ -110,6 +112,7 @@ struct ConnectionForm: View {
                 SecureField("Password (or saved in Keychain)", text: $password).textFieldStyle(.roundedBorder).onSubmit { connect() }.accessibilityIdentifier("server-password").disabled(store.busy)
             }
             Toggle("Remember password in macOS Keychain", isOn: $remember).font(.callout).disabled(store.busy)
+            ConnectionHeadersEditor(store: store).disabled(store.busy)
             if store.address.lowercased().hasPrefix("http://"), !store.address.contains("127.0.0.1"), !store.address.contains("localhost") {
                 Label("HTTP does not encrypt your password or data. Use HTTPS or a trusted private network.", systemImage: "exclamationmark.shield").font(.caption).foregroundStyle(.orange)
             }
@@ -118,15 +121,47 @@ struct ConnectionForm: View {
                 HStack { if store.busy { ProgressView().controlSize(.small) }; Text(store.busy ? "Connecting…" : "Connect").frame(maxWidth: .infinity) }.padding(.vertical, 5)
             }.buttonStyle(.borderedProminent).disabled(store.busy).accessibilityIdentifier("connect")
             Text("No server or model runtime is bundled. Direct Hermes dashboard, passkey and SSO sign-in are not supported in this release.").font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-        }
+        }.onChange(of: store.address) { _, _ in password = "" }
     }
     private func connect() {
         guard !store.busy else { return }
         let entered = password
         let connectionAddress = store.address
         let shouldRemember = remember
+        let headers = store.connectionHeaders
         password = ""
-        Task { await store.connect(address: connectionAddress, password: entered, remember: shouldRemember) }
+        Task { await store.connect(address: connectionAddress, password: entered, remember: shouldRemember, customHeaders: headers) }
+    }
+}
+
+struct ConnectionHeadersEditor: View {
+    @ObservedObject var store: MacStore
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Divider()
+            Text("Connection Headers").font(.headline)
+            Text("Cloudflare Access / authenticated proxies").font(.caption).foregroundStyle(.secondary)
+            ForEach($store.connectionHeaders) { $header in
+                HStack(alignment: .top, spacing: 6) {
+                    VStack(spacing: 5) {
+                        TextField("Header name (e.g. X-Api-Key)", text: $header.name).textFieldStyle(.roundedBorder)
+                            .accessibilityLabel("Header name").accessibilityIdentifier("connection-header-name")
+                        SecureField("Secret header value (blank = ignored)", text: $header.value).textFieldStyle(.roundedBorder)
+                            .accessibilityLabel("Value for \(header.name.isEmpty ? "custom header" : header.name)")
+                            .accessibilityIdentifier("connection-header-value")
+                    }
+                    Button { store.connectionHeaders.removeAll { $0.id == header.id } } label: { Image(systemName: "minus.circle") }
+                        .buttonStyle(.borderless).help("Remove header").accessibilityLabel("Remove header")
+                }
+            }
+            HStack {
+                Button("Add Header") { store.connectionHeaders.append(CustomHeader()) }
+                Button("Add Cloudflare Pair") { store.addCloudflareHeaders() }
+            }.controlSize(.small)
+            Button("Clear & Forget Saved Headers", role: .destructive) { store.clearConnectionHeaders() }.controlSize(.small)
+            Text("Enter both CF-Access-Client-Id and CF-Access-Client-Secret from an authorized Service Token. Cloudflare must allow it with a Service Auth policy; the WebUI password is a separate sign-in.").font(.caption).foregroundStyle(.secondary)
+            Text("Nonblank headers are saved in macOS Keychain for this exact server URL when you connect, independently of Remember password. Blank values are ignored; duplicate names use the last nonblank row. Accept / Content-Type built-ins win; transport-managed headers are rejected. Switching URLs never copies credentials.").font(.caption).foregroundStyle(.secondary)
+        }.fixedSize(horizontal: false, vertical: true)
     }
 }
 
@@ -137,10 +172,10 @@ struct ConnectionSettings: View {
             Text("Hermex for Mac").font(.title.bold())
             if store.connected {
                 Label(store.address, systemImage: "network").textSelection(.enabled)
-                Text("Passwords stay in the login Keychain. Session cookies and drafts are kept only in app memory, isolated per connection.").foregroundStyle(.secondary)
+                Text("Passwords and connection headers stay in the login Keychain, scoped to this server URL. Session cookies and drafts are kept only in app memory. Disconnect to edit headers; edits apply on the next connection, not to the active run.").foregroundStyle(.secondary)
                 HStack {
                     Button("Disconnect / Switch Server") { store.disconnect() }
-                    Button("Sign Out & Forget Password", role: .destructive) { Task { await store.logout() } }
+                    Button("Sign Out & Forget Credentials", role: .destructive) { Task { await store.logout() } }
                 }
             } else { ConnectionForm(store: store) }
             Divider()

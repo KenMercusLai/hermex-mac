@@ -201,7 +201,7 @@ struct ServerPanelView: View {
             case "Insights": insights = try await api.insights(days: period)
             default: break
             }
-        } catch { failure = "\(kind) could not be loaded: " + error.localizedDescription }
+        } catch { failure = "\(kind) could not be loaded: " + store.errorMessage(error) }
     }
     private func loadFiles() async {
         guard let api = store.api, let id = store.selectedID else { return }
@@ -213,7 +213,7 @@ struct ServerPanelView: View {
                 return (left.name ?? "").localizedStandardCompare(right.name ?? "") == .orderedAscending
             }
             failure = nil
-        } catch { failure = error.localizedDescription }
+        } catch { failure = store.errorMessage(error) }
     }
     private func open(_ entry: WorkspaceEntry) async {
         guard let api = store.api, let id = store.selectedID, let remote = entry.path else { return }
@@ -233,14 +233,14 @@ struct ServerPanelView: View {
                 preview = file.content ?? ""
                 if file.isTruncated { preview = (preview ?? "") + "\n\n[Server preview truncated]" }
             }
-        } catch { failure = error.localizedDescription }
+        } catch { failure = store.errorMessage(error) }
     }
     private func loadSkill(_ skill: SkillSummary) async {
         guard let api = store.api, let name = skill.name else { return }
         do {
             let result = try await api.skillContent(name: name, file: nil)
             previewTitle = name; preview = result.content ?? "No content returned."
-        } catch { failure = error.localizedDescription }
+        } catch { failure = store.errorMessage(error) }
     }
     private func loadOutput(_ job: CronJob) async {
         guard let api = store.api else { return }
@@ -248,6 +248,6 @@ struct ServerPanelView: View {
             let response = try await api.cronOutput(jobID: job.id, limit: 5)
             previewTitle = job.name ?? job.id
             preview = "## Prompt\n\n" + (job.prompt ?? "Not reported") + "\n\n## Recent output\n\n" + ((response.outputs ?? []).map { "### \($0.filename ?? "Run")\n\n\($0.content ?? "")" }.joined(separator: "\n\n").macNonEmpty ?? "No output reported.")
-        } catch { failure = error.localizedDescription }
+        } catch { failure = store.errorMessage(error) }
     }
 }

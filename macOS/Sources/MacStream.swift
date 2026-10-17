@@ -32,9 +32,10 @@ struct SSEFrameParser {
 
 enum MacStream {
     /// Uses the exact APIClient session (private cookie jar) and redirect guard.
-    static func consume(client: APIClient, streamID: String, after: Int?,
+    static func consume(client: APIClient, streamID: String, after: Int?, headers: [CustomHeader] = [],
                         onFrame: @escaping @MainActor (SSEFrame, SSEEvent) -> Bool) async throws {
         var request = URLRequest(url: client.chatStreamURL(streamID: streamID, replayAfterSeq: after))
+        headers.apply(to: &request)
         request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
         request.setValue("no-cache, no-transform", forHTTPHeaderField: "Cache-Control")
         request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
@@ -42,6 +43,10 @@ enum MacStream {
         let session = client.session
         let (bytes, response) = try await session.bytes(for: request, delegate: client.redirectHeaderStripper)
         defer { bytes.task.cancel() }
+        if let response = response as? HTTPURLResponse,
+           let message = ConnectionFailure.httpMessage(response: response, data: Data()) {
+            throw MacFailure.message(message)
+        }
         guard let response = response as? HTTPURLResponse, response.statusCode == 200 else {
             throw MacFailure.message("Stream connection was refused. Reconnect or sign in again.")
         }
