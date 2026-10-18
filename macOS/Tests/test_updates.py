@@ -36,6 +36,14 @@ class UpdatePackagingTests(unittest.TestCase):
         self.assertEqual(build.signing_entitlements('-', True),
                          {'com.apple.security.cs.disable-library-validation': True})
 
+    def test_install_smoke_preserves_real_built_target_version(self):
+        smoke_spec = importlib.util.spec_from_file_location('hermex_install_smoke', ROOT / 'macOS/Tests/update_install_smoke.py')
+        smoke = importlib.util.module_from_spec(smoke_spec)
+        smoke_spec.loader.exec_module(smoke)
+        self.assertEqual(smoke.target_version({'CFBundleVersion': '0.1.4', 'CFBundleShortVersionString': '0.1.4'}), '0.1.4')
+        with self.assertRaises(ValueError):
+            smoke.target_version({'CFBundleVersion': '0.1.4', 'CFBundleShortVersionString': '0.1.3'})
+
     def test_pinned_sdk_rejects_tampering_before_extracting(self):
         import sys
         sys.path.insert(0, str(ROOT / 'macOS/scripts'))

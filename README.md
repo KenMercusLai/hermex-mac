@@ -23,7 +23,7 @@ The app is **ad-hoc signed with hardened runtime**, not Developer ID signed or A
 
 Sparkle checks the public GitHub Releases feed daily and automatically downloads
 and installs updates by default. Installation completes on quit; update restarts
-wait for busy work or active streams. Use **Hermex → Check for Updates…** or
+wait for busy work, active streams or pending MEDIA saves/downloads. Use **Hermex → Check for Updates…** or
 **Settings → App Updates**, available before connecting to a server. Both
 automatic settings can be changed there. Feeds and archives require Ed25519
 signatures, with archive verification before extraction. Older 0.1.2 installations
@@ -38,7 +38,8 @@ including the explicit ad-hoc library-validation decision required for packaging
 - Saved server addresses and connection switching. Unsent text and attachment references are isolated per server/session **in app memory**.
 - Session list, server-side search (Return to search), create, rename, pin/unpin, archive/restore and confirmed permanent deletion. Right-click a session for actions. Enable **Archived** to find and restore archived sessions.
 - Collapsible **nested subagents** under their owning conversation, collapsed by default. Use the left chevron to reveal workers without selecting the parent; each child opens normally, retaining server-reported read-only restrictions. Parents show descendant counts and reported active workers. Expansion is memory-only and resets on disconnect/server change. Search results stay flat with parent context, so a collapsed matching child is never hidden. Missing owners remain visible with a truthful badge; grouping requires producer subagent metadata, never just a title or parent link.
-- Conversation history with earlier-message loading, inline Markdown/headings/fenced code, message/code copying, reasoning and recorded/live tool details.
+- Conversation history with earlier-message loading, native Markdown headings/lists/quotes/code/tables and inline emphasis/links, message/code copying, reasoning and recorded/live tool details. **Settings → Messages → Render Markdown** defaults on, persists, and immediately switches history/live replies to raw text when off.
+- **MEDIA save-download links (0.1.4)** remain clickable even with Markdown off. Choose a destination in the native save dialog before any request starts; Cancel downloads/writes nothing. Server paths use the authenticated `/api/media` endpoint, not local file access. [Syntax, security and limitations](macOS/MEDIA_MARKDOWN.md).
 - Real SSE streaming, **Stop**, visible disconnect errors and **Reattach** using the existing stream ID/journal cursor. Reattach never resends the prompt. **Refresh Run** discovers an active run after reopening a conversation.
 - Tool approval **Allow Once / Deny**, clarification choices and free-text answers. Pending requests are checked while a run is active; no automatic or permanent approval grants.
 - File/image attachments through the native paperclip file importer, up to 20 MB each, using the upstream multipart/attachment-marker contract.
@@ -69,7 +70,7 @@ Blank values are ignored, including the default empty Cloudflare pair. A partial
 
 Nonblank headers are saved in **macOS Keychain for that exact validated server URL** when connecting, independently of **Remember password**. Selecting a saved server or re-entering its URL restores its own headers; editing/pasting another address never copies credentials to it. In-progress header drafts stay source-owned in memory, and each connection captures an immutable snapshot for health, login, API, uploads, media, SSE and replay. Disconnect before editing active connection headers. **Clear & Forget Saved Headers** removes that server's saved/editor headers without deleting its WebUI password. **Sign Out & Forget Credentials** removes both; if server logout cannot be confirmed, local credentials are still forgotten and a warning is shown. Disconnect alone preserves saved credentials.
 
-Same-origin redirects retain headers. Cross-origin GET/media/SSE redirects strip configured custom headers, and cross-origin credential-bearing POST redirects are refused. No headers are attached to directly requested third-party media. Use HTTPS: HTTP exposes headers as well as passwords/data. Never post token values in bug reports, screenshots or logs. Browser email/SSO/MFA login is not implemented; use an administrator-authorized Service Token rather than disabling Access.
+Same-origin redirects retain headers. Cross-origin GET/preview-media/SSE redirects strip configured custom headers (save-download MEDIA refuses cross-origin redirects altogether), and cross-origin credential-bearing POST redirects are refused. No headers are attached to directly requested third-party media. Use HTTPS: HTTP exposes headers as well as passwords/data. Never post token values in bug reports, screenshots or logs. Browser email/SSO/MFA login is not implemented; use an administrator-authorized Service Token rather than disabling Access.
 
 ## Compatibility and limitations
 
@@ -78,7 +79,7 @@ This is a useful **first native Mac release, not full iOS parity**.
 - Targets **legacy hermes-webui**, not direct Hermes dashboard/Gateway/Bots. Passwordless servers and authorized proxy custom headers / Cloudflare Service Tokens work; passkeys, browser OIDC/SSO and browser multi-factor sign-in are not implemented.
 - Compiles the original `APIClient`, endpoints, tolerant models, multipart and catalog policies directly. Retains the original SSE event decoder; Apple URLSession replaces the third-party iOS EventSource transport. Original iOS source/history remain intact.
 - Contract reference: upstream Hermex plus read-only inspection of webui `641878bd88f91950ce9774af1ccf1372ba08ad19`. Automated integration uses an **explicit local protocol fixture**, not production transcripts or a live model. Authenticated production workflows were **not** exercised by the implementation task.
-- Files, memory, skills, tasks and insights are **read-only**. Task/memory/skill editing, Kanban, projects, Git mutations, session import/branch/compress/export controls, steering, voice/TTS, media playback, rich math/tables, app intents and server administration are not exposed in this Mac UI.
+- Files, memory, skills, tasks and insights are **read-only**. Task/memory/skill editing, Kanban, projects, Git mutations, session import/branch/compress/export controls, steering, voice/TTS, media playback, rich math/HTML/complex Markdown, app intents and server administration are not exposed in this Mac UI.
 - No iOS share extension, APNs relay, Live Activities, mobile app lock or App Store integration.
 - No disk transcript/offline cache. Loaded history remains visible on network interruption. Drafts do not survive quitting. Disconnecting/switching detaches the client, **not** the server's run. Reopen the session and choose **Refresh Run** to reattach. Reconnection is user-driven rather than an unbounded retry loop.
 - Unsupported routes show errors. Missing metrics show “Not reported”, not fabricated values. File permissions and all execution remain the server's security responsibility. Remote HTML is shown as text source, never executed.
@@ -100,7 +101,7 @@ bash macOS/scripts/test.sh
 python3 macOS/Tests/run_smoke.py
 
 # Universal app: choose signing policy first; see macOS/AUTOMATIC_UPDATES.md
-python3 macOS/scripts/build.py --version 0.1.3 --arch universal \
+python3 macOS/scripts/build.py --version 0.1.4 --arch universal \
   --signing-identity 'Developer ID Application: YOUR IDENTITY'
 ```
 
