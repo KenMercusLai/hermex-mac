@@ -33,6 +33,13 @@ SOURCE_SHA = 'f0df48d2e7878dbe505a3e4c8349e484c3fafc71df4e58f1e83daa6071021723'
 SCRATCH = Path(os.environ.get('HERMEX_SCRATCH', str(Path.home() / '.hermes/cache/scratch')))
 
 
+def target_version(info):
+    version = info.get('CFBundleVersion')
+    if not version or version != info.get('CFBundleShortVersionString'):
+        raise ValueError('Built app version fields must agree; never relabel a smoke target')
+    return version
+
+
 def main():
     prepare()
     SCRATCH.mkdir(parents=True, exist_ok=True)
@@ -98,7 +105,8 @@ try key.publicKey.rawRepresentation.base64EncodedString().write(toFile: args[2],
     run('ditto', SDK / 'Sparkle.framework', framework)
     info_path = new / 'Contents/Info.plist'
     info = plistlib.loads(info_path.read_bytes())
-    info.update(CFBundleIdentifier=appid, CFBundleVersion='0.1.3', CFBundleShortVersionString='0.1.3',
+    version = target_version(info)
+    info.update(CFBundleIdentifier=appid,
                 SUPublicEDKey=key, SUVerifyUpdateBeforeExtraction=True, SURequireSignedFeed=True,
                 SUSignedFeedFailureExpirationInterval=0, SUEnableAutomaticChecks=False)
     handler = functools.partial(SimpleHTTPRequestHandler, directory=str(archive_dir))
@@ -114,7 +122,7 @@ try key.publicKey.rawRepresentation.base64EncodedString().write(toFile: args[2],
     old_info = dict(info, CFBundleVersion='0.1.2', CFBundleShortVersionString='0.1.2')
     old_info_path.write_bytes(plistlib.dumps(old_info))
     run('codesign', '--force', '--sign', '-', '--timestamp=none', old)
-    archive = archive_dir / 'Hermex-Mac-0.1.3-universal.zip'
+    archive = archive_dir / f'Hermex-Mac-{version}-universal.zip'
     run('ditto', '-c', '-k', '--sequesterRsrc', '--keepParent', new, archive)
     try:
         run(SDK / 'bin/generate_appcast', '--ed-key-file', private,
@@ -164,13 +172,13 @@ try key.publicKey.rawRepresentation.base64EncodedString().write(toFile: args[2],
             good = update()
         print('SIGNED UPDATE:', good.returncode, good.stdout, good.stderr)
         assert good.returncode == 0, 'Sparkle installer did not report success'
-        assert installed_version() == '0.1.3', 'Installed app version was not replaced'
+        assert installed_version() == version, 'Installed app version was not replaced'
         before = hashlib.sha256((new / 'Contents/MacOS/Hermex').read_bytes()).hexdigest()
         after = hashlib.sha256((old / 'Contents/MacOS/Hermex').read_bytes()).hexdigest()
         assert before == after
         run('codesign', '--verify', '--deep', '--strict', '--all-architectures', old)
         run('lipo', '-archs', old / 'Contents/MacOS/Hermex')
-        results.update(installedVersion='0.1.3', installedExecutableSHA256=after,
+        results.update(installedVersion=version, installedExecutableSHA256=after,
                        officialSparkleInstaller=True, guiRelaunchTested=False, productionSigningTested=False)
     finally:
         server.shutdown()

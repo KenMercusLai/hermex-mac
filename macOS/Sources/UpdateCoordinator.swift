@@ -12,7 +12,7 @@ import SwiftUI
     private var updateTerminationPending = false
     private var terminationCompletion: ((Bool) -> Void)?
     var shouldDeferUpdateTermination: Bool {
-        updateTerminationPending && (store?.busy == true || store?.streaming == true || store?.streamID != nil)
+        updateTerminationPending && (store?.busy == true || store?.streaming == true || store?.streamID != nil || (store?.activeMediaDownloads ?? 0) > 0)
     }
     private(set) var settings: UpdateSettings!
     @Published private(set) var startupError: String?
@@ -22,12 +22,12 @@ import SwiftUI
         self.store = store
         gate = UpdateRestartGate(isBusy: { [weak store] in
             guard let store else { return false }
-            return store.busy || store.streaming || store.streamID != nil
+            return store.busy || store.streaming || store.streamID != nil || store.activeMediaDownloads > 0
         })
         super.init()
         controller = SPUStandardUpdaterController(startingUpdater: false, updaterDelegate: self, userDriverDelegate: nil)
         settings = UpdateSettings(updater: updater)
-        Publishers.CombineLatest3(store.$busy, store.$streaming, store.$streamID)
+        Publishers.CombineLatest4(store.$busy, store.$streaming, store.$streamID, store.$activeMediaDownloads)
             .sink { [weak self] _ in
                 // Published sends before the store changes; recheck on main actor
                 // after the mutation, including any intervening new activity.

@@ -118,6 +118,115 @@ private final class DelayedFixture {
     }
 }
 
+@MainActor private final class MediaGate<Value> {
+    private var continuation: CheckedContinuation<Value, Never>?
+    private var arrival: CheckedContinuation<Void, Never>?
+    private var arrived = false
+    func suspend() async -> Value {
+        await withCheckedContinuation { continuation = $0; arrived = true; arrival?.resume(); arrival = nil }
+    }
+    func waitUntilHeld() async { if !arrived { await withCheckedContinuation { arrival = $0 } } }
+    func release(_ value: Value) { continuation?.resume(returning: value); continuation = nil }
+}
+
+@Test @MainActor func mediaStoreCapturesOwnerBeforeSavePanelAndRejectsABAAndConnectionRaces() async throws {
+    for stage in ["panel", "fetch"] {
+        for change in ["ABA", "disconnect", "other-server"] {
+            let a = DelayedFixture(), b = DelayedFixture(); defer { a.close(); b.close() }
+            let store = MacStore(persistence: false, sessionFactory: a.makeSession)
+            store.address = a.address
+            store.connectionHeaders = [CustomHeader(name: "X-Token", value: "fixture-only-a")]
+            await store.connect(address: a.address, password: "", remember: false)
+            await store.selectSession("A")
+            let folder = MediaTestSupport.scratch.appendingPathComponent("media-owner-\(UUID())")
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: folder) }
+            let destination = folder.appendingPathComponent("chosen.zip"), temporary = folder.appendingPathComponent("download.tmp")
+            try Data("old".utf8).write(to: destination)
+            let panelGate = MediaGate<URL?>(), fetchGate = MediaGate<URL>()
+            let originalClient = store.api
+            var fetches = 0
+            let download = Task {
+                await store.saveMedia(MediaReference(source: "/srv/result.zip")!, select: { _ in
+                    if stage == "panel" { return await panelGate.suspend() }; return destination
+                }, fetch: { client, _, sessionID, headers in
+                    fetches += 1
+                    #expect(client === originalClient); #expect(sessionID == "A")
+                    #expect(headers.first?.value == "fixture-only-a")
+                    return await fetchGate.suspend()
+                })
+            }
+            if stage == "panel" { await panelGate.waitUntilHeld() } else { await fetchGate.waitUntilHeld() }
+            #expect(store.activeMediaDownloads == 1)
+            if change == "ABA" { await store.selectSession("B"); await store.selectSession("A") }
+            else {
+                store.disconnect()
+                if change == "other-server" {
+                    store.address = b.address
+                    store.connectionHeaders = [CustomHeader(name: "X-Token", value: "fixture-only-b")]
+                    await store.connect(address: b.address, password: "", remember: false)
+                    await store.selectSession("B")
+                }
+            }
+            store.error = "current-error"
+            if stage == "panel" { panelGate.release(destination) }
+            else { try Data("new".utf8).write(to: temporary); fetchGate.release(temporary) }
+            await download.value
+            #expect(fetches == (stage == "panel" ? 0 : 1))
+            #expect(try Data(contentsOf: destination) == Data("old".utf8))
+            #expect(!FileManager.default.fileExists(atPath: temporary.path))
+            #expect(store.error == "current-error")
+            #expect(store.activeMediaDownloads == 0)
+            store.disconnect()
+        }
+    }
+}
+
+@Test @MainActor func updaterDefersTerminationWhileMediaSavePanelOrTransferOwnsWork() async {
+    let fixture = DelayedFixture(); defer { fixture.close() }
+    let store = MacStore(persistence: false, sessionFactory: fixture.makeSession)
+    await store.connect(address: fixture.address, password: "", remember: false)
+    await store.selectSession("A")
+    let coordinator = UpdateCoordinator(store: store, start: false)
+    coordinator.updaterWillRelaunchApplication(coordinator.updater)
+    let panel = MediaGate<URL?>()
+    let download = Task { await store.saveMedia(MediaReference(source: "/srv/fixture.zip")!, select: { _ in await panel.suspend() }) }
+    await panel.waitUntilHeld()
+    #expect(coordinator.shouldDeferUpdateTermination)
+    panel.release(nil); await download.value
+    #expect(!coordinator.shouldDeferUpdateTermination)
+    store.disconnect()
+}
+
+@Test @MainActor func mediaStoreCancelAndConfirmedSaveUseCapturedHeaders() async throws {
+    let fixture = DelayedFixture(); defer { fixture.close() }
+    let store = MacStore(persistence: false, sessionFactory: fixture.makeSession)
+    store.address = fixture.address
+    store.connectionHeaders = [CustomHeader(name: "X-Token", value: "fixture-only-original")]
+    await store.connect(address: fixture.address, password: "", remember: false)
+    await store.selectSession("A")
+    let folder = MediaTestSupport.scratch.appendingPathComponent("media-confirm-\(UUID())")
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: folder); store.disconnect() }
+    let destination = folder.appendingPathComponent("chosen.zip"), temporary = folder.appendingPathComponent("download.tmp")
+    var fetches = 0
+    for confirmed in [false, true] {
+        await store.saveMedia(MediaReference(source: "/srv/a.zip")!, select: { _ in
+            store.connectionHeaders = [CustomHeader(name: "X-Token", value: "fixture-only-edited")]
+            return confirmed ? destination : nil
+        }, fetch: { _, _, sessionID, headers in
+            fetches += 1
+            #expect(confirmed); #expect(sessionID == "A")
+            #expect(headers.first?.value == "fixture-only-original")
+            try Data("wire".utf8).write(to: temporary); return temporary
+        })
+        #expect(store.error == nil)
+        #expect(FileManager.default.fileExists(atPath: destination.path) == confirmed)
+    }
+    #expect(fetches == 1)
+    #expect(try Data(contentsOf: destination) == Data("wire".utf8))
+}
+
 @Test @MainActor func delayedConnectKeepsImmutableHeaderSnapshotWhileEditorChangesServers() async throws {
     let a = DelayedFixture(); defer { a.close() }
     let b = DelayedFixture(); defer { b.close() }

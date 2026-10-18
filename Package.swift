@@ -12,6 +12,8 @@ let sources = upstreamModels.map { "HermesMobile/Models/\($0).swift" } +
         "HermesMobile/Features/Chat/SlashCommandRanker.swift", "macOS/Sources"
     ]
 
+// macOS/Sources includes native message presentation/downloads; documentation
+// and Python wire fixtures stay outside the shipped executable target.
 // An explicit source allowlist keeps all iOS resources/targets intact without
 // invoking Xcode-only asset or string catalog compilers. Exclude every unrelated
 // subtree, including new upstream files, instead of letting SPM infer resources.
@@ -37,7 +39,7 @@ let package = Package(
                           linkerSettings: [.unsafeFlags(["-F", root.appendingPathComponent(".build/sparkle").path,
                                                          "-framework", "Sparkle", "-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks"])]),
         .testTarget(name: "HermexMacTests", dependencies: ["HermexMac"], path: "macOS/Tests",
-                    exclude: ["protocol_fixture.py", "run_smoke.py", "test_updates.py", "update_install_smoke.py", "__pycache__"],
+                    exclude: ["protocol_fixture.py", "media_fixture.py", "run_smoke.py", "test_updates.py", "update_install_smoke.py", "__pycache__"],
                     swiftSettings: [.unsafeFlags(["-F", root.appendingPathComponent(".build/sparkle").path])])
     ],
     swiftLanguageModes: [.v5]

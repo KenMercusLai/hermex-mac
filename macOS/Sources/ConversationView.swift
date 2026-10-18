@@ -113,7 +113,7 @@ struct ConversationView: View {
                         }.padding(.vertical, 35)
                     }
                     ForEach(Array(store.messages.enumerated()), id: \.offset) { index, message in
-                        MessageRow(message: message).id("message-\(index)")
+                        MessageRow(message: message, download: { reference in Task { await store.saveMedia(reference) } }).id("message-\(index)")
                     }
                     if let tools = store.detail?.toolCalls, !tools.isEmpty {
                         DisclosureGroup("\(tools.count) recorded tool calls") {
@@ -136,7 +136,7 @@ struct ConversationView: View {
                                     Text(tool.preview).font(.system(.callout, design: .monospaced)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading).padding(.top, 5)
                                 } label: { Label(tool.name, systemImage: tool.failed ? "exclamationmark.circle" : tool.complete ? "checkmark.circle" : "terminal").font(.callout).foregroundStyle(tool.failed ? .red : .secondary) }
                             }
-                            if !store.run.text.isEmpty { NativeMarkdown(text: store.run.text) }
+                            if !store.run.text.isEmpty { MessageContent(text: store.run.text, download: { reference in Task { await store.saveMedia(reference) } }) }
                             if !store.streamDisconnected { ProgressView().controlSize(.small) }
                         }
                     }
@@ -215,6 +215,7 @@ struct ConversationView: View {
 
 struct MessageRow: View {
     let message: ChatMessage
+    var download: (MediaReference) -> Void
     private var isUser: Bool { message.role == "user" }
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -226,7 +227,7 @@ struct MessageRow: View {
             if let reasoning = message.reasoning, !reasoning.isEmpty { DisclosureGroup("Reasoning") { Text(reasoning).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading).padding(.top, 8) }.font(.callout).foregroundStyle(.secondary) }
             if message.role == "tool" {
                 DisclosureGroup("Tool output") { Text(message.content ?? "").font(.system(.callout, design: .monospaced)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
-            } else { NativeMarkdown(text: message.content ?? "") }
+            } else { MessageContent(text: message.content ?? "", download: download) }
             if let attachments = message.attachments, !attachments.isEmpty {
                 ForEach(Array(attachments.enumerated()), id: \.offset) { _, attachment in
                     Label(attachment.name ?? attachment.path ?? "Attachment", systemImage: attachment.isImage == true ? "photo" : "doc").font(.caption).foregroundStyle(.secondary).textSelection(.enabled)

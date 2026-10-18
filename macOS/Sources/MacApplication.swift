@@ -42,6 +42,8 @@ struct HermexApplication: App {
         Settings {
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
+                    MarkdownSettingsView()
+                    Divider()
                     UpdateSettingsView(coordinator: updates)
                     Divider()
                     ConnectionSettings(store: store)

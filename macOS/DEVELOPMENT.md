@@ -13,10 +13,11 @@ The Mac target is independent of the iOS Xcode project. Do not apply iOS simulat
 - **`MacStream`**: Foundation AsyncBytes transport, SSE blank-line framing, normal TLS validation, private auth session, cursor extraction, content-type/status checks and cancellation. It intentionally parses bytes rather than using `AsyncBytes.lines`, which omitted the empty frame boundaries during the real fixture test on this SDK.
 - **`RunProjection`**: replay-cursor de-duplication, text/reasoning/tool/request projection. `done` is not treated as socket end; `stream_end`, cancel and errors are terminal.
 - **`MacComposer`**: native NSTextView and a tested marked-text send gate. No send through an active IME composition.
-- **`NativeMarkdown`**: selectable native attributed inline Markdown, simple headings and fenced-code blocks with copying. No webview or remote HTML execution. Rich tables/math/media are not claimed.
+- **`NativeMarkdown` / `MessageContent`**: native Markdown block layout (headings/lists/quotes/code/tables) plus Foundation inline parsing, a default-on persistent rendering toggle shared by history/live replies, and save-first MEDIA controls even in raw-text mode. No webview/HTML execution or automatic image fetches. See [MEDIA_MARKDOWN.md](MEDIA_MARKDOWN.md) for syntax, boundaries and tests.
+- **`MediaTokens` / `MediaSave` / `MediaDownload`**: code-aware exact server-path detection, NSSavePanel confirmation, generation-bound authenticated URLSession downloads, cookie-less public-origin transport, cross-origin redirect refusal and atomic selected-destination saving. All additions are Mac-only.
 - **`SessionHierarchy` / `SessionDisclosureState`**: macOS-only, dependency-free projection of producer-marked delegated subagents. Iterative forest construction/traversal removes cyclic parent edges, retains orphan rows, de-duplicates IDs first-row-wins, preserves exact raw IDs and existing root/sibling order, and aggregates reported descendant activity. Disclosure stores IDs only in memory, scoped to the connected server URL; search payloads never prune it.
 - **`SidebarSessionRow`**: separate sibling disclosure/selection buttons, nested indentation, descendant/activity/selected-branch labels and exact-row context actions. Indentation caps at eight levels for narrow sidebars; deeper rows retain the full hierarchy and show their nesting level.
-- **`UpdateCoordinator` / `UpdateSettings` / `UpdateRestartGate`**: one startup Sparkle controller, independent of server authentication; Sparkle-backed persistent opt-outs and KVO-backed menu/settings state. Postponed restarts wait for busy/streaming/stream-ID activity, and an AppKit termination delegate provides a final guard against work beginning after postponement resumes. See [AUTOMATIC_UPDATES.md](AUTOMATIC_UPDATES.md) for key handling, signed-feed policy and the explicit ad-hoc signing blocker.
+- **`UpdateCoordinator` / `UpdateSettings` / `UpdateRestartGate`**: one startup Sparkle controller, independent of server authentication; Sparkle-backed persistent opt-outs and KVO-backed menu/settings state. Postponed restarts wait for busy/streaming/stream-ID and pending MEDIA save/download activity, and an AppKit termination delegate provides a final guard against work beginning after postponement resumes. See [AUTOMATIC_UPDATES.md](AUTOMATIC_UPDATES.md) for key handling, signed-feed policy and the explicit ad-hoc signing blocker.
 - **`MacApplication`, `ConversationView`, `ServerPanels`**: native views. Workspace/skills/memory/tasks/insights are read-only; destructive session deletion always uses a confirmation UI.
 
 Small webui memory and bounded-download excerpts are retained in `UpstreamAdapters.swift` because their upstream files also depend on the unlinked direct-Hermes stack. `Package.swift` explicitly allowlists sources and excludes all unrelated upstream subtrees/resources, avoiding Xcode-only asset and string-catalog compilers.
@@ -36,7 +37,11 @@ bash macOS/scripts/test.sh
 python3 macOS/Tests/run_smoke.py
 ```
 
-### Automatic-update implementation verification
+### MEDIA / Markdown candidate verification (0.1.4)
+
+See [MEDIA_MARKDOWN.md](MEDIA_MARKDOWN.md). The candidate adds deterministic parser/settings/atomic-save/owner-race coverage and real loopback MEDIA download tests with SHA-256 validation, including the default MacStore downloader and cancel-with-no-request proof. Parent-owned GUI acceptance and final publication remain separate. The earlier verification snapshots below are historical, not current release-status declarations.
+
+### Automatic-update implementation verification (historical v0.1.3 work)
 
 The updater change retains all **45 previous tests**, and **50 Swift tests** plus
 **3 packaging/security Python tests** now pass. Both protocol-fixture modes and
@@ -119,7 +124,7 @@ The implementation subagent did not launch a competing GUI session; independent 
 ## Packaging and release
 
 ```sh
-python3 macOS/scripts/build.py --version 0.1.3 --arch universal \
+python3 macOS/scripts/build.py --version 0.1.4 --arch universal \
   --signing-identity 'Developer ID Application: YOUR IDENTITY'
 ```
 
@@ -130,9 +135,9 @@ This builds arm64 and cross-compiles x86_64 with a macOS 14 deployment target, c
 Expected paths:
 
 - `dist/Hermex.app`
-- `dist/Hermex-Mac-0.1.3-universal.zip`
-- `dist/Hermex-Mac-0.1.3-universal.dmg`
-- `dist/Hermex-Mac-0.1.3-universal-SHA256SUMS.txt`
+- `dist/Hermex-Mac-0.1.4-universal.zip`
+- `dist/Hermex-Mac-0.1.4-universal.dmg`
+- `dist/Hermex-Mac-0.1.4-universal-SHA256SUMS.txt`
 
 Earlier v0.1.2 packaging verification (not a claim of completed v0.1.3 packaging): `codesign --verify --deep --strict` passed; `lipo -archs` reported `x86_64 arm64`; `vtool -show-build` reported minimum OS 14.0 for both slices; `unzip -t` reported no errors; `hdiutil verify` reported a valid checksum. Neither Apple notarization nor an Intel runtime test is claimed. Test execution is Apple silicon on macOS 27.
 

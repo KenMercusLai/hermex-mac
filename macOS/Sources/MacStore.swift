@@ -27,6 +27,9 @@ struct SessionDraft {
 }
 
 @MainActor final class MacStore: ObservableObject {
+    @Published private(set) var activeMediaDownloads = 0
+    private var mediaTransfers: [UUID: Task<URL, Error>] = [:]
+    private var publicMediaTransport: URLSession?
     @Published var connected = false
     @Published var busy = false
     @Published var error: String?
@@ -44,7 +47,12 @@ struct SessionDraft {
     }
     @Published private var sessionDisclosure = SessionDisclosureState()
     @Published var selectedID: String? {
-        didSet { if oldValue != selectedID { reconcileSessionDisclosure() } }
+        didSet {
+            if oldValue != selectedID {
+                mediaTransfers.values.forEach { $0.cancel() }
+                reconcileSessionDisclosure()
+            }
+        }
     }
     @Published var detail: SessionDetail?
     @Published var messages: [ChatMessage] = []
@@ -176,7 +184,14 @@ struct SessionDraft {
             if persistence { try ConnectionHeaderVault(vault: vault).save(snapshot, for: url) }
             let session = sessionFactory()
             transport = session
-            let client = APIClient(baseURL: url, session: session, customHeaderProvider: { snapshot })
+            let publicConfig = URLSessionConfiguration.ephemeral
+            publicConfig.httpCookieStorage = nil
+            publicConfig.urlCredentialStorage = nil
+            publicConfig.httpCookieAcceptPolicy = .never
+            publicConfig.httpShouldSetCookies = false
+            let publicSession = URLSession(configuration: publicConfig)
+            publicMediaTransport = publicSession
+            let client = APIClient(baseURL: url, session: session, publicMediaSession: publicSession, customHeaderProvider: { snapshot })
             try await ConnectionFailure.health(client: client, url: url, session: session, headers: snapshot)
             guard current == generation else { return }
             let status = try await client.authStatus()
@@ -215,7 +230,36 @@ struct SessionDraft {
         }
     }
 
+    typealias MediaFetcher = (APIClient, MediaReference, String, [CustomHeader]) async throws -> URL
+    func saveMedia(_ reference: MediaReference, select: MediaSave.Selector = MediaSave.chooseDestination,
+                   fetch: MediaFetcher? = nil) async {
+        // Snapshot before the save panel yields. Never recapture credentials or
+        // session selection after it returns (including A -> B -> A navigation).
+        guard let owner = ownership(), let sessionID = owner.sessionID else { return }
+        activeMediaDownloads += 1
+        defer { activeMediaDownloads -= 1 }
+        do {
+            try await MediaSave.perform(reference: reference, select: select, isCurrent: { self.ownsSelection(owner) }, fetch: {
+                let id = UUID()
+                let transfer = Task {
+                    if let fetch { return try await fetch(owner.client, reference, sessionID, owner.headers) }
+                    return try await owner.client.downloadMedia(reference: reference, sessionID: sessionID, headers: owner.headers)
+                }
+                self.mediaTransfers[id] = transfer
+                defer { self.mediaTransfers.removeValue(forKey: id) }
+                return try await withTaskCancellationHandler(operation: { try await transfer.value }, onCancel: { transfer.cancel() })
+            })
+        } catch {
+            guard ownsSelection(owner) else { return }
+            if error is CancellationError { self.error = "Download canceled. The destination was not changed." }
+            else if let failure = error as? MediaDownloadFailure { self.error = failure.localizedDescription }
+            else { self.error = "The download could not be saved. Check the chosen location and try again." }
+        }
+    }
+
     func disconnect() {
+        mediaTransfers.values.forEach { $0.cancel() }
+        publicMediaTransport?.invalidateAndCancel(); publicMediaTransport = nil
         saveDraft()
         generation += 1
         selectionGeneration += 1
