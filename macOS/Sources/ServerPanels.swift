@@ -15,7 +15,6 @@ struct ServerPanelView: View {
     @MacState<[SkillSummary]> private var skills: [SkillSummary] = []
     @MacState<String> private var skillSearch = ""
     @MacState<MemoryResponse?> private var memory: MemoryResponse?
-    @MacState<[CronJob]> private var jobs: [CronJob] = []
     @MacState<InsightsResponse?> private var insights: InsightsResponse?
     @MacState<Int> private var period = 30
 
@@ -27,7 +26,7 @@ struct ServerPanelView: View {
                     Text(kind == "Workspace" ? "Read-only · \(store.detail?.workspace ?? "select a session")" : "Server-side · read-only").font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
-                if loading { ProgressView().controlSize(.small) }
+                if loading || (kind == "Tasks" && store.tasksLoading) { ProgressView().controlSize(.small) }
                 Button { Task { await load() } } label: { Label("Refresh", systemImage: "arrow.clockwise") }.disabled(loading)
             }.padding(24)
             Divider()
@@ -37,7 +36,7 @@ struct ServerPanelView: View {
             else if kind == "Memory" { memoryBrowser }
             else if kind == "Tasks" { tasksBrowser }
             else { insightsBrowser }
-        }.task { await load() }
+        }.task(id: kind == "Tasks" ? store.connectionScope : kind) { await load() }
     }
 
     @ViewBuilder private var workspaceBrowser: some View {
@@ -128,20 +127,43 @@ struct ServerPanelView: View {
 
     private var tasksBrowser: some View {
         HSplitView {
-            List(jobs) { job in
-                Button { Task { await loadOutput(job) } } label: {
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack { Image(systemName: job.enabled == false ? "pause.circle" : "clock"); Text(job.name ?? job.id).font(.headline); Spacer() }
-                        Text(job.scheduleDisplay ?? job.schedule?.displayText ?? "Schedule not reported").font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary)
-                        if let status = job.lastStatus { Text("Last run: \(status)").font(.caption).foregroundStyle(.secondary) }
-                        Text(job.prompt ?? "").font(.callout).lineLimit(4)
-                    }.padding(.vertical, 10).contentShape(Rectangle())
-                }.buttonStyle(.plain)
-            }.frame(minWidth: 280, idealWidth: 340).overlay { if jobs.isEmpty, !loading { Text("No scheduled tasks").foregroundStyle(.secondary) } }
+            List(store.taskJobs) { job in
+                let count = store.taskWorkerCount(for: job)
+                HStack(alignment: .top, spacing: 4) {
+                    if count > 0 {
+                        Button { store.toggleTaskDisclosure(job.id) } label: {
+                            Image(systemName: store.expandedTaskIDs.contains(job.id) ? "chevron.down" : "chevron.right")
+                                .font(.caption.weight(.semibold)).frame(width: 18, height: 24)
+                        }.buttonStyle(.borderless)
+                            .accessibilityLabel("\(store.expandedTaskIDs.contains(job.id) ? "Collapse" : "Expand") \(count) subagents under \(job.name ?? job.id)")
+                            .accessibilityIdentifier("task-disclosure-\(job.id)")
+                            .help("Show subagents without selecting a task or conversation")
+                    } else { Color.clear.frame(width: 18, height: 24).accessibilityHidden(true) }
+                    Button { Task { await store.loadTaskOutput(job) } } label: {
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack { Image(systemName: job.enabled == false ? "pause.circle" : "clock"); Text(job.name ?? job.id).font(.headline); Spacer() }
+                            Text(job.scheduleDisplay ?? job.schedule?.displayText ?? "Schedule not reported").font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary)
+                            if let status = job.lastStatus { Text("Last run: \(status)").font(.caption).foregroundStyle(.secondary) }
+                            Text(job.prompt ?? "").font(.callout).lineLimit(4)
+                            if count > 0 { Text("\(count) \(count == 1 ? "subagent" : "subagents")").font(.caption).foregroundStyle(.secondary) }
+                        }.contentShape(Rectangle())
+                    }.buttonStyle(.plain)
+                }.padding(.vertical, 10)
+                ForEach(store.taskRows(for: job)) { row in
+                    SidebarSessionRow(row: row, expanded: store.expandedTaskWorkerIDs.contains(row.id),
+                                      selected: store.selectedID == row.id,
+                                      select: { Task { await store.selectSession(row.id) } },
+                                      toggle: { store.toggleTaskWorkerDisclosure(row.id) })
+                        .padding(.leading, 20)
+                }
+            }.frame(minWidth: 280, idealWidth: 340).overlay {
+                if store.taskJobs.isEmpty, !store.tasksLoading { Text("No scheduled tasks").foregroundStyle(.secondary) }
+            }
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    if let preview { Text(previewTitle).font(.title2.bold()); NativeMarkdown(text: preview) }
-                    else { ContentUnavailableView("Scheduled Tasks", systemImage: "calendar.badge.clock", description: Text("Select a task to read recent output. Creating, editing and running tasks stay in webui.")) }
+                    if let failure = store.taskFailure { Text(failure).foregroundStyle(.red) }
+                    if let preview = store.taskPreview { Text(store.taskPreviewTitle).font(.title2.bold()); NativeMarkdown(text: preview) }
+                    else { ContentUnavailableView("Scheduled Tasks", systemImage: "calendar.badge.clock", description: Text("Select a task to read recent output. Expand a task to open its subagents. Creating, editing and running tasks stay in webui.")) }
                 }.padding(24).frame(maxWidth: .infinity, alignment: .leading)
             }.frame(minWidth: 300)
         }
@@ -189,6 +211,7 @@ struct ServerPanelView: View {
     }
 
     private func load() async {
+        if kind == "Tasks" { await store.reloadTasks(); return }
         guard let api = store.api else { return }
         loading = true; failure = nil
         defer { loading = false }
@@ -197,7 +220,6 @@ struct ServerPanelView: View {
             case "Workspace": await loadFiles()
             case "Skills": skills = try await api.skills().skills ?? []
             case "Memory": memory = try await api.memory()
-            case "Tasks": jobs = try await api.crons().jobs ?? []
             case "Insights": insights = try await api.insights(days: period)
             default: break
             }
@@ -242,12 +264,5 @@ struct ServerPanelView: View {
             previewTitle = name; preview = result.content ?? "No content returned."
         } catch { failure = store.errorMessage(error) }
     }
-    private func loadOutput(_ job: CronJob) async {
-        guard let api = store.api else { return }
-        do {
-            let response = try await api.cronOutput(jobID: job.id, limit: 5)
-            previewTitle = job.name ?? job.id
-            preview = "## Prompt\n\n" + (job.prompt ?? "Not reported") + "\n\n## Recent output\n\n" + ((response.outputs ?? []).map { "### \($0.filename ?? "Run")\n\n\($0.content ?? "")" }.joined(separator: "\n\n").macNonEmpty ?? "No output reported.")
-        } catch { failure = store.errorMessage(error) }
-    }
+
 }
