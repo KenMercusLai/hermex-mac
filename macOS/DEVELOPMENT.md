@@ -37,6 +37,47 @@ bash macOS/scripts/test.sh
 python3 macOS/Tests/run_smoke.py
 ```
 
+### Compact tool disclosure (0.1.5 candidate)
+
+History `role: tool` results, recorded-only snippets and live tools share one
+compact native button (name, status icon/text, chevron) and an adjacent independent
+Copy button. Expanded detail text is selectable and monospaced. Empty assistant
+scaffolding is omitted without dropping text/MEDIA, reasoning or attachments.
+
+Settings → **Tool details** persists `toolDisplayMode` app-wide in UserDefaults;
+missing/invalid values fall back to **Always collapsed (default)**. The other
+choices are **During execution; collapse on reply** and **Always expanded**.
+Every mode remains manually clickable. Changes apply immediately to all sources.
+Manual overrides survive completion/preview/token redraws within the same phase;
+mode, actual phase, source/run or selection/connection ownership changes reset
+them to the automatic default. Returning to a conversation does not restore old
+manual choices. Toggles themselves are not persisted.
+
+Execution-only mode follows accepted events, not the entire streaming flag:
+visible non-whitespace assistant tokens or nonempty interim replies collapse
+active tool details; the next tool phase expands them again. Completion/reasoning
+alone do not collapse them. `done` is not terminal. Stream end/cancellation/server
+error settles disclosure; a disconnected transport preserves the last phase for
+reattachment. Unrelated settled history and recorded-only snippets stay collapsed.
+Exact matching call IDs let history rows from the current run follow its phase.
+
+Full history results take precedence over duplicate live/saved snippets with the
+same exact call ID; live events take precedence over recorded-only snippets with
+their exact ID. Names/result text are never deduplication keys. If IDs are absent,
+overlap cannot be proven: legacy history/snippets remain separate and the
+existing ID-less live name fallback is unchanged. Recorded-only snippets stay
+after history, without invented chronological anchors. Execution/permissions and
+upstream iOS sources are unchanged.
+
+`ToolDisplayTests.swift` covers persistence/fallback, mode/manual/phase rules,
+source identity, payload retention, compact native sizing and synthetic offscreen
+conversation/settings rendering. `StoreTests.swift` adds selection/connection
+ABA scope coverage. The render test prints its scratch PNG directory and uses
+an isolated UserDefaults suite, `MacStore(persistence: false)` and no API client;
+windows are never ordered onscreen. This is programmatic rendering, not desktop
+interaction, VoiceOver or production-server acceptance. Existing protocol,
+packaging and disposable Sparkle installation checks remain separate.
+
 ### MEDIA / Markdown candidate verification (0.1.4)
 
 See [MEDIA_MARKDOWN.md](MEDIA_MARKDOWN.md). The candidate adds deterministic parser/settings/atomic-save/owner-race coverage and real loopback MEDIA download tests with SHA-256 validation, including the default MacStore downloader and cancel-with-no-request proof. Parent-owned GUI acceptance and final publication remain separate. The earlier verification snapshots below are historical, not current release-status declarations.
