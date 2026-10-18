@@ -45,6 +45,14 @@ struct SessionDraft {
     @Published var sessions: [SessionSummary] = [] {
         didSet { reconcileSessionDisclosure() }
     }
+    @Published private(set) var fullSessions: [SessionSummary] = []
+    @Published private(set) var taskJobs: [CronJob] = []
+    @Published private(set) var taskPreview: String?
+    @Published private(set) var taskPreviewTitle = ""
+    @Published private(set) var tasksLoading = false
+    @Published private(set) var taskFailure: String?
+    @Published private(set) var expandedTaskIDs: Set<String> = []
+    @Published private(set) var expandedTaskWorkerIDs: Set<String> = []
     @Published private var sessionDisclosure = SessionDisclosureState()
     @Published var selectedID: String? {
         didSet {
@@ -79,9 +87,15 @@ struct SessionDraft {
     private let persistence: Bool
     private let sessionFactory: () -> URLSession
     private let vault: MacKeychain
+    private var snapshotRevision = 0
+    private var sessionsRevision = 0
+    private var tasksRevision = 0
+    private var taskPreviewRevision = 0
+    private var taskPreviewJob: CronJob?
     private var generation = 0
     private var selectionGeneration = 0
     /// Presentation ownership also changes across A → B → A navigation/reconnect.
+    var connectionScope: String { "\(generation)" }
     var toolDisclosureScope: String { "\(generation)/\(selectionGeneration)" }
     private var streamTask: Task<Void, Never>?
     private var drafts: [String: SessionDraft] = [:]
@@ -274,6 +288,9 @@ struct SessionDraft {
         error = nil
         connected = false
         connectionLabel = "Not connected"
+        fullSessions = []
+        taskJobs = []; expandedTaskIDs = []; expandedTaskWorkerIDs = []
+        taskPreview = nil; taskPreviewTitle = ""; taskPreviewJob = nil; taskFailure = nil; tasksLoading = false
         sessions = []; selectedID = nil; detail = nil; messages = []
         draft = ""; attachments = []; run = RunProjection()
         streamID = nil; streaming = false; streamDisconnected = false
@@ -309,7 +326,7 @@ struct SessionDraft {
     var isSessionSearch: Bool { !search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     var expandedSessionIDs: Set<String> { sessionDisclosure.expanded }
     var sidebarRows: [SessionHierarchy.Row] {
-        SessionHierarchy(sessions: sessions).rows(expanded: sessionDisclosure.expanded, searching: isSessionSearch, selectedID: selectedID)
+        SessionHierarchy(sessions: CronSessionRouting(sessions: sessions, relationshipSnapshot: fullSessions).conversations).rows(expanded: sessionDisclosure.expanded, searching: isSessionSearch, selectedID: selectedID)
     }
     func toggleSessionDisclosure(_ id: String) { sessionDisclosure.toggle(id) }
     private func reconcileSessionDisclosure() {
@@ -320,14 +337,93 @@ struct SessionDraft {
     func reloadSessions() async throws {
         guard let api else { return }
         let current = generation
+        sessionsRevision += 1
+        let revision = sessionsRevision
+        let query = search, archived = showArchived
+        let searching = !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        if !searching { snapshotRevision += 1 }
+        let snapshot = snapshotRevision
         let result: [SessionSummary]
-        if search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            result = try await api.sessions(includeArchived: showArchived, archivedLimit: nil).sessions ?? []
-        } else { result = try await api.searchSessions(query: search).sessions ?? [] }
-        guard current == generation else { return }
-        sessions = result.sorted {
+        do {
+            if !searching {
+                // A relationship snapshot must include archived intermediates.
+                // Apply the sidebar's archive filter only to emitted rows below.
+                result = try await api.sessions(includeArchived: true, archivedLimit: nil).sessions ?? []
+            } else { result = try await api.searchSessions(query: query).sessions ?? [] }
+        } catch {
+            guard current == generation, self.api === api, revision == sessionsRevision,
+                  query == search, archived == showArchived else { return }
+            throw error
+        }
+        guard current == generation, self.api === api, revision == sessionsRevision,
+              query == search, archived == showArchived else { return }
+        if !searching, snapshot == snapshotRevision { fullSessions = result }
+        sessions = result.filter { searching || archived || $0.archived != true }.sorted {
             if ($0.pinned == true) != ($1.pinned == true) { return $0.pinned == true }
             return ($0.updatedAt ?? 0) > ($1.updatedAt ?? 0)
+        }
+    }
+
+    private func taskWorkers(for job: CronJob) -> [SessionSummary] {
+        guard taskJobs.contains(job) else { return [] }
+        return CronSessionRouting(sessions: fullSessions).workers(for: job)
+    }
+    func taskWorkerCount(for job: CronJob) -> Int { taskWorkers(for: job).count }
+    func taskRows(for job: CronJob) -> [SessionHierarchy.Row] {
+        guard expandedTaskIDs.contains(job.id) else { return [] }
+        return SessionHierarchy(sessions: taskWorkers(for: job)).rows(expanded: expandedTaskWorkerIDs, selectedID: selectedID)
+    }
+    func toggleTaskDisclosure(_ id: String) {
+        if !expandedTaskIDs.insert(id).inserted { expandedTaskIDs.remove(id) }
+    }
+    func toggleTaskWorkerDisclosure(_ id: String) {
+        if !expandedTaskWorkerIDs.insert(id).inserted { expandedTaskWorkerIDs.remove(id) }
+    }
+    func reloadTasks() async {
+        guard let owner = ownership() else { return }
+        tasksRevision += 1
+        let revision = tasksRevision
+        tasksLoading = true; taskFailure = nil
+        defer { if ownsConnection(owner), revision == tasksRevision { tasksLoading = false } }
+        do {
+            let response = try await owner.client.crons()
+            guard ownsConnection(owner), revision == tasksRevision else { return }
+            taskJobs = response.jobs ?? []
+            if let job = taskPreviewJob, !taskJobs.contains(job) {
+                taskPreviewRevision += 1
+                taskPreview = nil; taskPreviewTitle = ""; taskPreviewJob = nil
+            }
+            snapshotRevision += 1
+            let snapshot = snapshotRevision
+            let catalog = try await owner.client.sessions(includeArchived: true, archivedLimit: nil)
+            guard ownsConnection(owner), revision == tasksRevision else { return }
+            if snapshot == snapshotRevision { fullSessions = catalog.sessions ?? [] }
+            expandedTaskIDs.formIntersection(taskJobs.map(\.id))
+            expandedTaskWorkerIDs.formIntersection(fullSessions.map(\.id))
+        } catch {
+            guard ownsConnection(owner), revision == tasksRevision else { return }
+            taskJobs = []
+            taskPreviewRevision += 1
+            taskPreviewJob = nil
+            taskFailure = "Tasks could not be loaded: " + errorMessage(error)
+            taskPreview = nil; taskPreviewTitle = ""
+        }
+    }
+
+    func loadTaskOutput(_ job: CronJob) async {
+        guard let owner = ownership(), taskJobs.contains(job) else { return }
+        taskPreviewRevision += 1
+        let revision = taskPreviewRevision
+        taskPreviewJob = job
+        taskPreview = nil; taskPreviewTitle = job.name ?? job.id; taskFailure = nil
+        do {
+            let response = try await owner.client.cronOutput(jobID: job.id, limit: 5)
+            guard ownsConnection(owner), revision == taskPreviewRevision, taskJobs.contains(job) else { return }
+            taskPreview = "## Prompt\n\n" + (job.prompt ?? "Not reported") + "\n\n## Recent output\n\n" +
+                ((response.outputs ?? []).map { "### \($0.filename ?? "Run")\n\n\($0.content ?? "")" }.joined(separator: "\n\n").macNonEmpty ?? "No output reported.")
+        } catch {
+            guard ownsConnection(owner), revision == taskPreviewRevision, taskJobs.contains(job) else { return }
+            taskFailure = errorMessage(error)
         }
     }
 

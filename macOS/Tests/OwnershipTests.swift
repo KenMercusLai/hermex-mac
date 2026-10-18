@@ -540,6 +540,322 @@ private final class DelayedFixture {
     store.disconnect()
 }
 
+@Test @MainActor func sessionRefreshRejectsOlderResultsAndChangedSearchQuery() async throws {
+    for mode in ["same-query", "changed-query"] {
+        let fixture = DelayedFixture(); defer { fixture.close() }
+        fixture.response = { request, count in
+            if request.path == "/api/sessions" {
+                return #"{"sessions":[{"session_id":"full-\#(count)"}]}"#
+            }
+            if request.path == "/api/sessions/search" { return #"{"sessions":[{"session_id":"match"}]}"# }
+            return DelayedFixture.payload(request)
+        }
+        let store = MacStore(persistence: false, sessionFactory: fixture.makeSession)
+        await store.connect(address: fixture.address, password: "", remember: false)
+        fixture.hold("/api/sessions")
+        let old = Task { try await store.reloadSessions() }
+        await fixture.waitUntilHeld()
+        if mode == "changed-query" { store.search = "new-query" }
+        try await store.reloadSessions()
+        fixture.release(); try await old.value
+        #expect(store.sessions.map(\.id) == (mode == "same-query" ? ["full-3"] : ["match"]))
+        #expect(store.fullSessions.map(\.id) == (mode == "same-query" ? ["full-3"] : ["full-1"]))
+        store.disconnect()
+    }
+}
+
+private func archivedCronCatalog(_ request: DelayedFixture.Request) -> String {
+    if request.path == "/api/crons" { return #"{"jobs":[{"id":"job"}]}"# }
+    if request.path == "/api/sessions" {
+        let intermediate = request.query["include_archived"] == "1"
+            ? #"{"session_id":"middle","archived":true,"raw_source":"subagent","parent_session_id":"cron_job_20261018_090000"},"# : ""
+        return #"{"sessions":[\#(intermediate){"session_id":"leaf","raw_source":"subagent","parent_session_id":"middle"},{"session_id":"interactive"}]}"#
+    }
+    return DelayedFixture.payload(request)
+}
+
+@Test @MainActor func archivedCronAncestrySurvivesNormalSidebarRefreshWithoutRetainingDeletedIDs() async throws {
+    let fixture = DelayedFixture(); defer { fixture.close() }
+    fixture.response = { request, _ in archivedCronCatalog(request) }
+    let store = MacStore(persistence: false, sessionFactory: fixture.makeSession)
+    await store.connect(address: fixture.address, password: "", remember: false)
+    defer { store.disconnect() }
+    await store.reloadTasks()
+    let job = try #require(store.taskJobs.first)
+    #expect(store.taskWorkerCount(for: job) == 2)
+    #expect(!store.showArchived)
+    try await store.reloadSessions()
+    #expect(Set(store.sessions.map(\.id)) == ["leaf", "interactive"])
+    #expect(store.sidebarRows.map(\.id) == ["interactive"])
+    #expect(store.taskWorkerCount(for: job) == 2)
+    #expect(Set(store.fullSessions.map(\.id)) == ["middle", "leaf", "interactive"])
+    fixture.response = { request, _ in
+        request.path == "/api/sessions" ? #"{"sessions":[{"session_id":"interactive"}]}"# : archivedCronCatalog(request)
+    }
+    try await store.reloadSessions()
+    #expect(store.fullSessions.map(\.id) == ["interactive"])
+    #expect(store.taskWorkerCount(for: job) == 0)
+}
+
+@Test @MainActor func archivedCronCatalogSurvivesInterleavedTasksAndSidebarCompletions() async throws {
+    for heldRequester in ["tasks", "sidebar"] {
+        let fixture = DelayedFixture(); defer { fixture.close() }
+        fixture.response = { request, _ in archivedCronCatalog(request) }
+        let store = MacStore(persistence: false, sessionFactory: fixture.makeSession)
+        await store.connect(address: fixture.address, password: "", remember: false)
+        await store.reloadTasks()
+        let job = try #require(store.taskJobs.first)
+        fixture.hold("/api/sessions")
+        let held = Task {
+            if heldRequester == "tasks" { await store.reloadTasks() }
+            else { try await store.reloadSessions() }
+        }
+        await fixture.waitUntilHeld()
+        if heldRequester == "tasks" { try await store.reloadSessions() }
+        else { await store.reloadTasks() }
+        fixture.release(); try await held.value
+        #expect(store.taskWorkerCount(for: job) == 2)
+        #expect(Set(store.fullSessions.map(\.id)) == ["middle", "leaf", "interactive"])
+        #expect(store.sidebarRows.map(\.id) == ["interactive"])
+        #expect(Set(store.sessions.map(\.id)) == ["leaf", "interactive"])
+        store.disconnect()
+    }
+}
+
+@Test @MainActor func tasksAndConversationsShareNewestFullSnapshot() async throws {
+    let fixture = DelayedFixture(); defer { fixture.close() }
+    fixture.response = { request, count in
+        if request.path == "/api/sessions" { return #"{"sessions":[{"session_id":"full-\#(count)"}]}"# }
+        if request.path == "/api/crons" { return #"{"jobs":[{"id":"job"}]}"# }
+        return DelayedFixture.payload(request)
+    }
+    let store = MacStore(persistence: false, sessionFactory: fixture.makeSession)
+    await store.connect(address: fixture.address, password: "", remember: false)
+    fixture.hold("/api/sessions")
+    let old = Task { await store.reloadTasks() }
+    await fixture.waitUntilHeld()
+    try await store.reloadSessions()
+    fixture.release(); await old.value
+    #expect(store.fullSessions.map(\.id) == ["full-3"])
+    store.disconnect()
+}
+
+@Test @MainActor func taskOutputRejectsOlderSelectionAndClearsOnDisconnect() async throws {
+    let fixture = DelayedFixture(); defer { fixture.close() }
+    fixture.response = { request, _ in
+        if request.path == "/api/crons" { return #"{"jobs":[{"id":"first"},{"id":"second"}]}"# }
+        if request.path == "/api/crons/output" {
+            return #"{"outputs":[{"filename":"run","content":"\#(request.query["job_id"] ?? "missing")"}]}"#
+        }
+        return DelayedFixture.payload(request)
+    }
+    let store = MacStore(persistence: false, sessionFactory: fixture.makeSession)
+    await store.connect(address: fixture.address, password: "", remember: false)
+    await store.reloadTasks()
+    let first = try #require(store.taskJobs.first), second = try #require(store.taskJobs.last)
+    fixture.hold("/api/crons/output")
+    let old = Task { await store.loadTaskOutput(first) }
+    await fixture.waitUntilHeld()
+    await store.loadTaskOutput(second)
+    fixture.release(); await old.value
+    #expect(store.taskPreviewTitle == "second")
+    #expect(store.taskPreview?.contains("second") == true)
+    #expect(store.taskPreview?.contains("first") == false)
+    store.disconnect()
+    #expect(store.taskPreview == nil)
+    #expect(store.taskPreviewTitle.isEmpty)
+}
+
+@Test @MainActor func unsupportedTaskAPIHidesWorkersWithoutBreakingConversations() async {
+    let fixture = DelayedFixture(); defer { fixture.close() }
+    fixture.response = { request, count in
+        if request.path == "/api/sessions" { return #"{"sessions":[{"session_id":"worker","raw_source":"subagent","parent_session_id":"cron_unknown_20261018_090000"},{"session_id":"interactive"}]}"# }
+        if request.path == "/api/crons" { return "{" }
+        return DelayedFixture.payload(request)
+    }
+    let store = MacStore(persistence: false, sessionFactory: fixture.makeSession)
+    await store.connect(address: fixture.address, password: "", remember: false)
+    fixture.hold("/api/crons")
+    let refresh = Task { await store.reloadTasks() }
+    await fixture.waitUntilHeld()
+    #expect(store.tasksLoading)
+    fixture.release(); await refresh.value
+    #expect(!store.tasksLoading)
+    #expect(store.taskFailure != nil)
+    #expect(store.taskJobs.isEmpty)
+    #expect(store.connected)
+    #expect(store.sidebarRows.map(\.id) == ["interactive"])
+    store.disconnect()
+}
+
+@Test @MainActor func taskRoutingCachesRejectUncancelledServerABAResponses() async throws {
+    for stage in ["jobs", "sessions", "preview"] {
+        let a = DelayedFixture(), b = DelayedFixture(); defer { a.close(); b.close() }
+        func response(_ marker: String) -> (DelayedFixture.Request, Int) -> String {
+            { request, _ in
+                if request.path == "/api/sessions" { return #"{"sessions":[{"session_id":"\#(marker)"}]}"# }
+                if request.path == "/api/crons" { return #"{"jobs":[{"id":"job","name":"\#(marker)"}]}"# }
+                if request.path == "/api/crons/output" { return #"{"outputs":[{"filename":"run","content":"\#(marker)"}]}"# }
+                return DelayedFixture.payload(request)
+            }
+        }
+        a.response = response("stale")
+        b.response = response("server-b")
+        let store = MacStore(persistence: false, sessionFactory: a.makeSession)
+        await store.connect(address: a.address, password: "", remember: false)
+        await store.reloadTasks()
+        // This independent transport survives disconnect: URLSession cancellation
+        // cannot masquerade as an ownership check.
+        store.api = APIClient(baseURL: URL(string: a.address)!, session: a.makeSession())
+        let job = try #require(store.taskJobs.first)
+        a.hold(stage == "jobs" ? "/api/crons" : stage == "sessions" ? "/api/sessions" : "/api/crons/output")
+        let old = Task {
+            if stage == "preview" { await store.loadTaskOutput(job) }
+            else { await store.reloadTasks() }
+        }
+        await a.waitUntilHeld()
+        await store.connect(address: b.address, password: "", remember: false)
+        await store.reloadTasks()
+        #expect(store.taskJobs.first?.name == "server-b")
+        #expect(store.taskPreview == nil)
+        a.response = response("fresh-a")
+        await store.connect(address: a.address, password: "", remember: false)
+        await store.reloadTasks()
+        await store.loadTaskOutput(try #require(store.taskJobs.first))
+        a.release(); await old.value
+        #expect(store.fullSessions.map(\.id) == ["fresh-a"])
+        #expect(store.taskJobs.first?.name == "fresh-a")
+        #expect(store.taskPreviewTitle == "fresh-a")
+        #expect(store.taskPreview?.contains("fresh-a") == true)
+        #expect(store.taskPreview?.contains("stale") == false)
+        #expect(store.taskFailure == nil)
+        #expect(!store.tasksLoading)
+        store.disconnect()
+    }
+}
+
+@Test @MainActor func deletedTaskNeverKeepsWorkersOrItsOldPreview() async throws {
+    let fixture = DelayedFixture(); defer { fixture.close() }
+    fixture.response = { request, count in
+        if request.path == "/api/crons" { return count == 1 ? #"{"jobs":[{"id":"job","name":"Backup"}]}"# : #"{"jobs":[{"name":"job"}]}"# }
+        if request.path == "/api/sessions" { return #"{"sessions":[{"session_id":"worker","raw_source":"subagent","parent_session_id":"cron_job_20261018_090000"}]}"# }
+        if request.path == "/api/crons/output" { return #"{"outputs":[{"content":"old task output"}]}"# }
+        return DelayedFixture.payload(request)
+    }
+    let store = MacStore(persistence: false, sessionFactory: fixture.makeSession)
+    await store.connect(address: fixture.address, password: "", remember: false)
+    await store.reloadTasks()
+    let job = try #require(store.taskJobs.first)
+    await store.loadTaskOutput(job)
+    #expect(store.taskPreview != nil)
+    await store.reloadTasks()
+    let nameOnly = try #require(store.taskJobs.first)
+    #expect(store.taskWorkerCount(for: nameOnly) == 0)
+    #expect(store.taskPreview == nil)
+    #expect(store.taskPreviewTitle.isEmpty)
+    #expect(store.sidebarRows.isEmpty)
+    #expect(store.fullSessions.map(\.id) == ["worker"])
+    #expect(fixture.seen("/api/session/delete").isEmpty)
+    store.disconnect()
+}
+
+@Test @MainActor func olderSessionRefreshFailureCannotReplaceSuccessfulRefresh() async {
+    let fixture = DelayedFixture(); defer { fixture.close() }
+    fixture.response = { request, count in
+        if request.path == "/api/sessions" { return count == 2 ? "{" : #"{"sessions":[{"session_id":"current"}]}"# }
+        return DelayedFixture.payload(request)
+    }
+    let store = MacStore(persistence: false, sessionFactory: fixture.makeSession)
+    await store.connect(address: fixture.address, password: "", remember: false)
+    fixture.hold("/api/sessions")
+    let old = Task { await store.refresh() }
+    await fixture.waitUntilHeld()
+    await store.refresh()
+    fixture.release(); await old.value
+    #expect(store.error == nil)
+    #expect(store.sessions.map(\.id) == ["current"])
+    store.disconnect()
+}
+
+@Test @MainActor func taskPreviewFailureCannotOverwriteNewerRefreshFailure() async throws {
+    let fixture = DelayedFixture(); defer { fixture.close() }
+    fixture.response = { request, count in
+        if request.path == "/api/crons" { return count == 1 ? #"{"jobs":[{"id":"job"}]}"# : "{" }
+        if request.path == "/api/crons/output" { return "{" }
+        return DelayedFixture.payload(request)
+    }
+    let store = MacStore(persistence: false, sessionFactory: fixture.makeSession)
+    await store.connect(address: fixture.address, password: "", remember: false)
+    await store.reloadTasks()
+    let job = try #require(store.taskJobs.first)
+    fixture.hold("/api/crons/output")
+    let old = Task { await store.loadTaskOutput(job) }
+    await fixture.waitUntilHeld()
+    await store.reloadTasks()
+    let currentFailure = store.taskFailure
+    fixture.release(); await old.value
+    #expect(store.taskFailure == currentFailure)
+    store.disconnect()
+}
+
+@Test @MainActor func taskPreviewSuccessStaysInvalidAfterFailedCatalogAndEqualJobRestore() async throws {
+    try await verifyTaskPreviewInvalidAfterFailedCatalogAndEqualJobRestore(failedOutput: false)
+}
+
+@Test @MainActor func taskPreviewFailureStaysInvalidAfterFailedCatalogAndEqualJobRestore() async throws {
+    try await verifyTaskPreviewInvalidAfterFailedCatalogAndEqualJobRestore(failedOutput: true)
+}
+
+@MainActor private func verifyTaskPreviewInvalidAfterFailedCatalogAndEqualJobRestore(failedOutput: Bool) async throws {
+    let fixture = DelayedFixture(); defer { fixture.close() }
+    fixture.response = { request, count in
+        if request.path == "/api/crons" { return count == 2 ? "{" : #"{"jobs":[{"id":"job","name":"A"}]}"# }
+        if request.path == "/api/crons/output" {
+            return failedOutput ? "{" : #"{"outputs":[{"content":"stale A output"}]}"#
+        }
+        return DelayedFixture.payload(request)
+    }
+    let store = MacStore(persistence: false, sessionFactory: fixture.makeSession)
+    await store.connect(address: fixture.address, password: "", remember: false)
+    defer { store.disconnect() }
+    await store.reloadTasks()
+    let job = try #require(store.taskJobs.first)
+    fixture.hold("/api/crons/output")
+    let old = Task { await store.loadTaskOutput(job) }
+    await fixture.waitUntilHeld()
+    await store.reloadTasks()
+    #expect(store.taskJobs.isEmpty)
+    #expect(store.taskFailure != nil)
+    #expect(store.taskPreview == nil)
+    #expect(store.taskPreviewTitle.isEmpty)
+    await store.reloadTasks()
+    #expect(store.taskJobs == [job])
+    #expect(store.taskFailure == nil)
+    fixture.release(); await old.value
+    #expect(store.taskPreview == nil)
+    #expect(store.taskPreviewTitle.isEmpty)
+    #expect(store.taskFailure == nil)
+}
+
+@Test @MainActor func taskRefreshRejectsOlderOverlappingCatalog() async {
+    let fixture = DelayedFixture(); defer { fixture.close() }
+    fixture.response = { request, count in
+        if request.path == "/api/crons" {
+            return #"{"jobs":[{"id":"\#(count == 1 ? "old" : "new")"}]}"#
+        }
+        return DelayedFixture.payload(request)
+    }
+    let store = MacStore(persistence: false, sessionFactory: fixture.makeSession)
+    await store.connect(address: fixture.address, password: "", remember: false)
+    fixture.hold("/api/crons")
+    let old = Task { await store.reloadTasks() }
+    await fixture.waitUntilHeld()
+    await store.reloadTasks()
+    fixture.release(); await old.value
+    #expect(store.taskJobs.map(\.id) == ["new"])
+    store.disconnect()
+}
+
 @Test @MainActor func disconnectedAuthenticationCannotPublishOrBlockNextConnection() async {
     let first = DelayedFixture(), second = DelayedFixture()
     defer { first.close(); second.close() }
