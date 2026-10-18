@@ -81,6 +81,8 @@ struct SessionDraft {
     private let vault: MacKeychain
     private var generation = 0
     private var selectionGeneration = 0
+    /// Presentation ownership also changes across A → B → A navigation/reconnect.
+    var toolDisclosureScope: String { "\(generation)/\(selectionGeneration)" }
     private var streamTask: Task<Void, Never>?
     private var drafts: [String: SessionDraft] = [:]
     private var connectedAddress: String?

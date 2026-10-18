@@ -7,6 +7,9 @@ struct ConversationView: View {
     @MacState<Bool> private var showControls = false
     @MacState<String> private var clarification = ""
     @MacState<Bool> private var follow = true
+    @AppStorage(ToolDisplayMode.key) private var storedToolMode = ToolDisplayMode.collapsed.rawValue
+    private var toolMode: ToolDisplayMode { ToolDisplayMode(rawValue: storedToolMode) ?? .collapsed }
+    private var toolScope: String { store.toolDisclosureScope }
     var body: some View {
         VStack(spacing: 0) {
             if let detail = store.detail {
@@ -102,9 +105,14 @@ struct ConversationView: View {
     }
 
     private var transcript: some View {
+        let tools = ToolTranscriptPresentation(messages: store.messages, recorded: store.detail?.toolCalls ?? [], run: store.run, active: store.streaming || store.streamID != nil)
+        return transcript(tools)
+    }
+
+    private func transcript(_ tools: ToolTranscriptPresentation) -> some View {
         ScrollViewReader { reader in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 24) {
+                LazyVStack(alignment: .leading, spacing: 10) {
                     if (store.detail?.messagesOffset ?? 0) > 0 { Button("Load Earlier Messages") { Task { await store.loadOlder() } }.frame(maxWidth: .infinity) }
                     if store.messages.isEmpty, !store.streaming {
                         VStack(alignment: .leading, spacing: 10) {
@@ -112,32 +120,22 @@ struct ConversationView: View {
                             Text("Ask a question, attach a file, or give your agent a task.").foregroundStyle(.secondary)
                         }.padding(.vertical, 35)
                     }
-                    ForEach(Array(store.messages.enumerated()), id: \.offset) { index, message in
-                        MessageRow(message: message, download: { reference in Task { await store.saveMedia(reference) } }).id("message-\(index)")
+                    ForEach(tools.history) { row in
+                        MessageRow(message: row.message, tool: row.tool, toolScope: toolScope, toolMode: toolMode, download: { reference in Task { await store.saveMedia(reference) } })
+                            .padding(.vertical, row.tool == nil ? 7 : 0)
                     }
-                    if let tools = store.detail?.toolCalls, !tools.isEmpty {
-                        DisclosureGroup("\(tools.count) recorded tool calls") {
-                            VStack(alignment: .leading, spacing: 10) {
-                                ForEach(Array(tools.enumerated()), id: \.offset) { _, tool in
-                                    VStack(alignment: .leading, spacing: 4) {
-                                        Label(tool.name ?? "Tool", systemImage: "terminal").font(.caption.bold())
-                                        Text(tool.snippet ?? "").font(.system(.caption, design: .monospaced)).textSelection(.enabled)
-                                    }.frame(maxWidth: .infinity, alignment: .leading)
-                                }
-                            }.padding(.top, 10)
-                        }.font(.callout).foregroundStyle(.secondary)
+                    ForEach(tools.recorded) { tool in
+                        ToolDetailButton(item: tool, scope: toolScope, mode: toolMode).id(toolMode)
                     }
-                    if store.streaming || !store.run.text.isEmpty {
+                    if store.streaming || !store.run.text.isEmpty || !store.run.tools.isEmpty || !store.run.reasoning.isEmpty {
                         VStack(alignment: .leading, spacing: 12) {
                             Label(store.streamDisconnected ? "Response paused · reattach to continue" : "Hermes", systemImage: "sparkles").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                             if !store.run.reasoning.isEmpty { DisclosureGroup("Reasoning") { Text(store.run.reasoning).textSelection(.enabled).font(.callout).frame(maxWidth: .infinity, alignment: .leading).padding(.top, 8) } }
-                            ForEach(store.run.tools) { tool in
-                                DisclosureGroup {
-                                    Text(tool.preview).font(.system(.callout, design: .monospaced)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading).padding(.top, 5)
-                                } label: { Label(tool.name, systemImage: tool.failed ? "exclamationmark.circle" : tool.complete ? "checkmark.circle" : "terminal").font(.callout).foregroundStyle(tool.failed ? .red : .secondary) }
+                            ForEach(tools.live) { tool in
+                                ToolDetailButton(item: tool, scope: toolScope, mode: toolMode).id(toolMode)
                             }
                             if !store.run.text.isEmpty { MessageContent(text: store.run.text, download: { reference in Task { await store.saveMedia(reference) } }) }
-                            if !store.streamDisconnected { ProgressView().controlSize(.small) }
+                            if store.streaming && !store.streamDisconnected { ProgressView().controlSize(.small) }
                         }
                     }
                     Color.clear.frame(height: 1).id("bottom")
@@ -145,7 +143,7 @@ struct ConversationView: View {
             }.onChange(of: store.messages.count) { _, _ in if follow { reader.scrollTo("bottom", anchor: .bottom) } }
                 .onChange(of: store.run.text) { _, _ in if follow { reader.scrollTo("bottom", anchor: .bottom) } }
                 .onChange(of: store.selectedID) { _, _ in reader.scrollTo("bottom", anchor: .bottom) }
-        }
+        }.id(toolScope)
     }
 
     private var composer: some View {
@@ -215,19 +213,24 @@ struct ConversationView: View {
 
 struct MessageRow: View {
     let message: ChatMessage
+    var tool: ToolDisplayItem? = nil
+    var toolScope = ""
+    var toolMode: ToolDisplayMode = .collapsed
     var download: (MediaReference) -> Void
     private var isUser: Bool { message.role == "user" }
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Label(isUser ? "You" : message.role == "assistant" ? "Hermes" : message.name ?? message.role ?? "Message", systemImage: isUser ? "person.crop.circle" : message.role == "assistant" ? "sparkles" : "terminal").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                Spacer()
-                Button { copyText(message.content ?? "") } label: { Image(systemName: "doc.on.doc") }.buttonStyle(.borderless).help("Copy message as Markdown")
+            if let tool {
+                ToolDetailButton(item: tool, scope: toolScope, mode: toolMode).id(toolMode)
+            } else {
+                HStack {
+                    Label(isUser ? "You" : message.role == "assistant" ? "Hermes" : message.name ?? message.role ?? "Message", systemImage: isUser ? "person.crop.circle" : message.role == "assistant" ? "sparkles" : "terminal").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                    Spacer()
+                    Button { copyText(message.content ?? "") } label: { Image(systemName: "doc.on.doc") }.buttonStyle(.borderless).help("Copy message as Markdown")
+                }
             }
             if let reasoning = message.reasoning, !reasoning.isEmpty { DisclosureGroup("Reasoning") { Text(reasoning).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading).padding(.top, 8) }.font(.callout).foregroundStyle(.secondary) }
-            if message.role == "tool" {
-                DisclosureGroup("Tool output") { Text(message.content ?? "").font(.system(.callout, design: .monospaced)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
-            } else { MessageContent(text: message.content ?? "", download: download) }
+            if tool == nil { MessageContent(text: message.content ?? "", download: download) }
             if let attachments = message.attachments, !attachments.isEmpty {
                 ForEach(Array(attachments.enumerated()), id: \.offset) { _, attachment in
                     Label(attachment.name ?? attachment.path ?? "Attachment", systemImage: attachment.isImage == true ? "photo" : "doc").font(.caption).foregroundStyle(.secondary).textSelection(.enabled)

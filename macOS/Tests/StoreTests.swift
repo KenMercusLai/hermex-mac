@@ -56,6 +56,26 @@ private final class ConnectProtocol: URLProtocol {
     store.disconnect()
 }
 
+@Test @MainActor func toolDisclosureScopeCannotSurviveSelectionOrConnectionABA() async {
+    let config = URLSessionConfiguration.ephemeral
+    config.protocolClasses = [ConnectProtocol.self]
+    let store = MacStore(persistence: false, sessionFactory: { URLSession(configuration: config) })
+    await store.connect(address: "http://fixture.invalid", password: "", remember: false)
+    await store.selectSession("one")
+    let first = store.toolDisclosureScope
+    store.draft = "Redraw only"
+    #expect(store.toolDisclosureScope == first)
+    await store.selectSession("other")
+    await store.selectSession("one")
+    #expect(store.toolDisclosureScope != first)
+    let next = store.toolDisclosureScope
+    store.disconnect()
+    await store.connect(address: "http://fixture.invalid", password: "", remember: false)
+    await store.selectSession("one")
+    #expect(store.toolDisclosureScope != next)
+    store.disconnect()
+}
+
 @Test func connectionRegistryIsKeychainBacked() throws {
     let vault = MacKeychain(service: "com.kenmercuslai.hermex-mac.registry-test.\(UUID())")
     defer { try? vault.delete(account: "connections") }
